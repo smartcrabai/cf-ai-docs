@@ -826,7 +826,7 @@ async function findAiSearchItemByKey(
 	for (;;) {
 		const listed = await instance.items.list({
 			page,
-			per_page: 100,
+			per_page: 50,
 			search: key,
 		});
 		const exact = listed.result.find((item) => item.key === key);
