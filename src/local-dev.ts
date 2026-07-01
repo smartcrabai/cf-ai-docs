@@ -5,10 +5,8 @@ import { createLocalMockEnv, type LocalSeedDocument } from "./local-mocks";
 const port = Number(Bun.env.PORT ?? "8787");
 const hostname = Bun.env.HOST ?? "127.0.0.1";
 const env = createLocalMockEnv({
-	apiToken: Bun.env.AGENT_API_TOKEN,
 	defaultInstance: Bun.env.DEFAULT_AI_SEARCH_INSTANCE ?? "docs",
 	documents: await loadSeedDocuments(Bun.env.LOCAL_DOCS_SEED),
-	requireAuth: Bun.env.REQUIRE_AUTH === "true",
 });
 
 Bun.serve({

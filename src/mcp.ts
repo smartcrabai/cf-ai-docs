@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { requireActorPermission } from "./auth";
 import {
 	type Actor,
 	ApplyUpdateInputSchema,
@@ -34,7 +35,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: SearchInputSchema,
 			title: "Search documents",
 		},
-		async (input) => asToolResult(() => searchDocuments(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "read");
+				return searchDocuments(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -45,7 +50,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: GetDocumentInputSchema,
 			title: "Get document",
 		},
-		async (input) => asToolResult(() => getDocument(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "read");
+				return getDocument(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -56,7 +65,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: ProposeUpdateInputSchema,
 			title: "Propose update",
 		},
-		async (input) => asToolResult(() => proposeUpdate(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "write");
+				return proposeUpdate(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -67,7 +80,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: CreateDocumentInputSchema,
 			title: "Create document",
 		},
-		async (input) => asToolResult(() => createDocument(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "write");
+				return createDocument(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -78,7 +95,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: DeleteDocumentInputSchema,
 			title: "Delete document",
 		},
-		async (input) => asToolResult(() => deleteDocument(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "write");
+				return deleteDocument(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -89,7 +110,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: ApplyUpdateInputSchema,
 			title: "Apply update",
 		},
-		async (input) => asToolResult(() => applyUpdate(env, actor, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "apply");
+				return applyUpdate(env, actor, input);
+			}),
 	);
 
 	server.registerTool(
@@ -100,7 +125,11 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			inputSchema: AuditLogInputSchema,
 			title: "Audit log",
 		},
-		async (input) => asToolResult(() => auditLog(env, input)),
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "audit");
+				return auditLog(env, input);
+			}),
 	);
 
 	return server;

@@ -7,6 +7,8 @@ description: Use this skill when you need to search, read, propose updates to, a
 
 Use the configured `cf-ai-docs` MCP server for documentation RAG and controlled documentation updates.
 
+The remote MCP endpoint is protected by Cloudflare Access Managed OAuth. Tool execution depends on the authenticated Access identity: all authenticated users can search and read documents, editor users can propose create/update/delete operations, and admin users can apply proposals or read audit logs.
+
 ## Workflow
 
 1. Search before answering documentation questions.

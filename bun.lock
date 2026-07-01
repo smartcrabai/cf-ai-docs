@@ -8,6 +8,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@typescript/native-preview": "^7.0.0-dev.20260630.1",
         "agents": "^0.17.3",
+        "jose": "^6.2.3",
         "zod": "^4.4.3",
       },
       "devDependencies": {
