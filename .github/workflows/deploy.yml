@@ -34,4 +34,5 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
+          preCommands: wrangler d1 migrations apply cf-ai-docs --remote
           command: deploy
