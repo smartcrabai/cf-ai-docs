@@ -3,6 +3,7 @@ import {
 	AuditLogInputSchema,
 	CreateDocumentInputSchema,
 	DeleteDocumentInputSchema,
+	type Actor,
 	type Env,
 	GetDocumentInputSchema,
 	ProposeUpdateInputSchema,
@@ -13,12 +14,24 @@ import {
 	deleteDocument,
 	getDocument,
 	HttpError,
-	identifyActor,
 	problemFromError,
 	proposeUpdate,
 	searchDocuments,
 } from "./core";
 import { createDocsMcpServer } from "./mcp";
+import {
+	authenticateRequest,
+	buildProtectedResourceMetadata,
+	getAllowedHosts,
+	getAllowedOrigins,
+	getAuthErrorHeaders,
+	getCorsOrigin,
+	getMcpCorsOptions,
+	isProtectedResourceMetadataPath,
+	isRestApiEnabled,
+	requireHttpPermission,
+	type ToolPermission,
+} from "./auth";
 
 const API_ROUTES = new Set([
 	"/api/search",
@@ -46,7 +59,7 @@ export async function handleRequest(
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	if (request.method === "OPTIONS") {
-		return corsResponse(null, 204);
+		return corsResponse(null, 204, {}, request, env);
 	}
 
 	const url = new URL(request.url);
@@ -56,7 +69,7 @@ export async function handleRequest(
 			return jsonResponse({
 				name: "cf-ai-docs",
 				mcp_endpoint: "/mcp",
-				rest_endpoints: [...API_ROUTES].sort(),
+				rest_endpoints: isRestApiEnabled(env) ? [...API_ROUTES].sort() : [],
 				tools: [
 					"search",
 					"get_document",
@@ -67,6 +80,10 @@ export async function handleRequest(
 					"audit_log",
 				],
 			});
+		}
+
+		if (isProtectedResourceMetadataPath(url.pathname)) {
+			return jsonResponse(buildProtectedResourceMetadata(request, env));
 		}
 
 		if (url.pathname === "/health") {
@@ -84,35 +101,51 @@ export async function handleRequest(
 				);
 			}
 			const { createMcpHandler } = await import("agents/mcp");
-			const actor = identifyActor(request, env);
+			const actor = await authenticateRequest(request, env);
 			const server = createDocsMcpServer(env, actor);
-			return await createMcpHandler(server, {
-				authContext: { props: { actor } },
-				corsOptions: {
-					exposeHeaders: "Mcp-Session-Id, mcp-session-id",
-					headers:
-						"Authorization, Content-Type, Mcp-Protocol-Version, mcp-protocol-version, Mcp-Session-Id, mcp-session-id",
-					methods: "GET, POST, DELETE, OPTIONS",
-					origin: "*",
-				},
-				enableJsonResponse: true,
-				route: "/mcp",
-			})(request, env, ctx);
+			return await createMcpHandler(
+				server,
+				buildMcpHandlerOptions(request, env, actor),
+			)(request, env, ctx);
 		}
 
 		if (API_ROUTES.has(url.pathname)) {
+			if (!isRestApiEnabled(env)) {
+				return jsonResponse({ error: "Not found." }, 404);
+			}
 			return await handleApiRoute(request, env, url.pathname);
 		}
 
 		return jsonResponse({ error: "Not found." }, 404);
 	} catch (error) {
 		const problem = problemFromError(error);
-		return jsonResponse(problem, problem.status);
+		return jsonResponse(
+			problem,
+			problem.status,
+			getAuthErrorHeaders(error),
+			request,
+			env,
+		);
 	}
 }
 
 function isBunRuntime(): boolean {
 	return "Bun" in globalThis;
+}
+
+export function buildMcpHandlerOptions(
+	request: Request,
+	env: Env,
+	actor: Actor,
+) {
+	return {
+		allowedHosts: getAllowedHosts(env),
+		allowedOrigins: getAllowedOrigins(env),
+		authContext: { props: { actor } },
+		corsOptions: getMcpCorsOptions(request, env),
+		enableDnsRebindingProtection: true,
+		route: "/mcp",
+	};
 }
 
 async function handleApiRoute(
@@ -124,7 +157,8 @@ async function handleApiRoute(
 		return jsonResponse({ error: "Method not allowed." }, 405);
 	}
 
-	const actor = identifyActor(request, env);
+	const actor = await authenticateRequest(request, env);
+	requireHttpPermission(request, env, actor, apiRoutePermission(pathname));
 	const body = await readJsonBody(request);
 
 	switch (pathname) {
@@ -159,6 +193,24 @@ async function handleApiRoute(
 	}
 }
 
+function apiRoutePermission(pathname: string): ToolPermission {
+	switch (pathname) {
+		case "/api/search":
+		case "/api/get_document":
+			return "read";
+		case "/api/propose_update":
+		case "/api/create_document":
+		case "/api/delete_document":
+			return "write";
+		case "/api/apply_update":
+			return "apply";
+		case "/api/audit_log":
+			return "audit";
+		default:
+			return "read";
+	}
+}
+
 async function readJsonBody(request: Request): Promise<unknown> {
 	const text = await request.text();
 	if (!text.trim()) {
@@ -171,30 +223,48 @@ async function readJsonBody(request: Request): Promise<unknown> {
 	}
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-	return corsResponse(JSON.stringify(body, null, 2), status, {
-		"Content-Type": "application/json; charset=utf-8",
-	});
+function jsonResponse(
+	body: unknown,
+	status = 200,
+	headers: HeadersInit = {},
+	request?: Request,
+	env?: Env,
+): Response {
+	return corsResponse(
+		JSON.stringify(body, null, 2),
+		status,
+		{
+			"Content-Type": "application/json; charset=utf-8",
+			...headers,
+		},
+		request,
+		env,
+	);
 }
 
 function corsResponse(
 	body: BodyInit | null,
 	status: number,
 	headers: HeadersInit = {},
+	request?: Request,
+	env?: Env,
 ): Response {
 	const responseHeaders = new Headers(headers);
-	responseHeaders.set("Access-Control-Allow-Origin", "*");
+	responseHeaders.set(
+		"Access-Control-Allow-Origin",
+		request && env ? getCorsOrigin(request, env) : "*",
+	);
 	responseHeaders.set(
 		"Access-Control-Allow-Methods",
 		"GET, POST, DELETE, OPTIONS",
 	);
 	responseHeaders.set(
 		"Access-Control-Allow-Headers",
-		"Authorization, Content-Type, Mcp-Protocol-Version, mcp-protocol-version, Mcp-Session-Id, mcp-session-id",
+		"Authorization, Content-Type, Accept, Mcp-Protocol-Version, mcp-protocol-version, Mcp-Session-Id, mcp-session-id, Last-Event-ID, last-event-id",
 	);
 	responseHeaders.set(
 		"Access-Control-Expose-Headers",
-		"Mcp-Session-Id, mcp-session-id",
+		"Mcp-Session-Id, mcp-session-id, WWW-Authenticate",
 	);
 	return new Response(body, {
 		headers: responseHeaders,

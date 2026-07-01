@@ -55,12 +55,7 @@ type LocalAuditEventRow = {
 };
 
 export function createLocalMockEnv(
-	options: {
-		defaultInstance?: string;
-		documents?: LocalSeedDocument[];
-		requireAuth?: boolean;
-		apiToken?: string;
-	} = {},
+	options: { defaultInstance?: string; documents?: LocalSeedDocument[] } = {},
 ): Env {
 	const defaultInstance = options.defaultInstance ?? "docs";
 	const aiSearch = new LocalAiSearchNamespace(defaultInstance);
@@ -77,13 +72,15 @@ export function createLocalMockEnv(
 	}
 
 	return {
-		AGENT_API_TOKEN: options.apiToken,
 		AI_SEARCH: aiSearch as unknown as AiSearchNamespace,
 		DB: new LocalD1Database() as unknown as D1Database,
 		DEFAULT_AI_SEARCH_INSTANCE: defaultInstance,
 		DOCS_BUCKET: r2 as unknown as R2Bucket,
+		ENABLE_REST_API: "true",
+		LOCAL_AUTH_BYPASS: "true",
+		MCP_RESOURCE_URL: "http://localhost/mcp",
+		OAUTH_AUTHORIZATION_SERVER: "http://localhost",
 		PROPOSAL_MAX_BYTES: "2000000",
-		REQUIRE_AUTH: options.requireAuth ? "true" : "false",
 		UPDATE_POLL_INTERVAL_MS: "250",
 		UPDATE_POLL_TIMEOUT_MS: "1000",
 	};

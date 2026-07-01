@@ -18,19 +18,31 @@ export interface Env {
 	DB?: D1Database;
 	DOCS_BUCKET?: R2Bucket;
 	DEFAULT_AI_SEARCH_INSTANCE?: string;
-	REQUIRE_AUTH?: string;
-	AGENT_API_TOKEN?: string;
-	TRUST_CF_ACCESS_HEADERS?: string;
+	CF_ACCESS_TEAM_DOMAIN?: string;
+	CF_ACCESS_AUD?: string;
+	MCP_RESOURCE_URL?: string;
+	OAUTH_AUTHORIZATION_SERVER?: string;
+	AUTH_EDITOR_EMAILS?: string;
+	AUTH_ADMIN_EMAILS?: string;
+	MCP_ALLOWED_ORIGINS?: string;
+	MCP_ALLOWED_HOSTS?: string;
+	ENABLE_REST_API?: string;
+	LOCAL_AUTH_BYPASS?: string;
 	PROPOSAL_MAX_BYTES?: string;
 	UPDATE_POLL_INTERVAL_MS?: string;
 	UPDATE_POLL_TIMEOUT_MS?: string;
 	ALLOW_WEBSITE_FETCH?: string;
 }
 
+export type ActorRole = "read" | "editor" | "admin";
+
 export type Actor = {
 	id: string;
-	kind: "cloudflare-access" | "bearer" | "anonymous";
+	kind: "cloudflare-access" | "local";
 	email?: string;
+	roles: ActorRole[];
+	scopes: string[];
+	claims?: Record<string, unknown>;
 };
 
 export class HttpError extends Error {
@@ -38,6 +50,7 @@ export class HttpError extends Error {
 		public readonly status: number,
 		message: string,
 		public readonly details?: unknown,
+		public readonly headers?: HeadersInit,
 	) {
 		super(message);
 		this.name = "HttpError";
@@ -193,59 +206,6 @@ export type DocumentResult = {
 		custom_metadata?: Record<string, string>;
 	};
 };
-
-export function identifyActor(request: Request, env: Env): Actor {
-	const bearerToken = parseBearerToken(request.headers.get("Authorization"));
-	if (env.AGENT_API_TOKEN) {
-		if (!bearerToken || !constantTimeEqual(bearerToken, env.AGENT_API_TOKEN)) {
-			throw new HttpError(401, "Unauthorized");
-		}
-
-		return {
-			id: "agent-token",
-			kind: "bearer",
-		};
-	}
-
-	if (isEnabled(env.TRUST_CF_ACCESS_HEADERS)) {
-		const accessActor = identifyCloudflareAccessActor(request);
-		if (accessActor) {
-			return accessActor;
-		}
-	}
-
-	if (isEnabled(env.REQUIRE_AUTH)) {
-		throw new HttpError(401, "Unauthorized");
-	}
-
-	return {
-		id: "anonymous",
-		kind: "anonymous",
-	};
-}
-
-function identifyCloudflareAccessActor(request: Request): Actor | null {
-	const accessEmail = request.headers.get("Cf-Access-Authenticated-User-Email");
-	if (accessEmail) {
-		return {
-			email: accessEmail,
-			id: accessEmail,
-			kind: "cloudflare-access",
-		};
-	}
-
-	const accessServiceId =
-		request.headers.get("Cf-Access-Authenticated-User-Service-Token-Id") ??
-		request.headers.get("Cf-Access-Client-Id");
-	if (accessServiceId) {
-		return {
-			id: `access-service:${accessServiceId}`,
-			kind: "cloudflare-access",
-		};
-	}
-
-	return null;
-}
 
 export async function searchDocuments(
 	env: Env,
@@ -1455,11 +1415,6 @@ function requireDocumentKey(document: DocumentResult): string {
 	return key;
 }
 
-function parseBearerToken(value: string | null): string | null {
-	const match = value?.match(/^Bearer\s+(.+)$/i);
-	return match?.[1] ?? null;
-}
-
 function d1ChangeCount(result: D1Result): number {
 	const changes = result.meta.changes;
 	return typeof changes === "number" ? changes : 0;
@@ -1486,19 +1441,7 @@ function sanitizeAiSearchMetadata(
 	);
 }
 
-function constantTimeEqual(left: string, right: string): boolean {
-	if (left.length !== right.length) {
-		return false;
-	}
-
-	let diff = 0;
-	for (let index = 0; index < left.length; index += 1) {
-		diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
-	}
-	return diff === 0;
-}
-
-function isEnabled(value: string | undefined): boolean {
+export function isEnabled(value: string | undefined): boolean {
 	return value?.toLowerCase() === "true" || value === "1";
 }
 

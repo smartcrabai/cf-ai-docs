@@ -29,7 +29,7 @@ LLM Agent
 - `apply_update`: apply an approved proposal (create, update, or delete) to built-in storage or R2, rejecting stale baselines.
 - `audit_log`: inspect D1 audit events for searches, reads, proposals, applies, and conflicts.
 
-The MCP endpoint is `POST /mcp` and `GET /mcp` via Streamable HTTP. REST equivalents are available under `/api/*` for debugging and automation.
+The MCP endpoint is `POST /mcp` and `GET /mcp` via Streamable HTTP with SSE enabled. REST equivalents can be enabled under `/api/*` for local debugging and automation, but are disabled by default in deployed configuration.
 
 ## Setup
 
@@ -53,6 +53,14 @@ Update `wrangler.jsonc`:
 - Replace `d1_databases[0].database_id` with the created D1 database ID.
 - Set `vars.DEFAULT_AI_SEARCH_INSTANCE` to your AI Search instance name.
 - Keep or change the `DOCS_BUCKET` binding depending on whether R2-backed updates are needed.
+- Replace the Access and MCP placeholder vars:
+  - `CF_ACCESS_TEAM_DOMAIN`: `https://<your-team-name>.cloudflareaccess.com`
+  - `CF_ACCESS_AUD`: the Access application AUD tag
+  - `MCP_RESOURCE_URL`: the public MCP URL, for example `https://docs.example.com/mcp`
+  - `OAUTH_AUTHORIZATION_SERVER`: the Managed OAuth authorization server URL exposed by the Access-protected app
+  - `MCP_ALLOWED_ORIGINS` and `MCP_ALLOWED_HOSTS`: allowed browser origins and Host headers for DNS rebinding protection
+  - `AUTH_EDITOR_EMAILS`: comma-separated users allowed to create/update/delete proposals
+  - `AUTH_ADMIN_EMAILS`: comma-separated users allowed to apply proposals and read audit logs
 
 Apply migrations:
 
@@ -60,13 +68,13 @@ Apply migrations:
 bun run db:migrate
 ```
 
-Configure authentication. Set a Worker secret for service-to-service MCP and REST clients:
+Configure Cloudflare Access as a self-hosted application in front of the public MCP hostname and enable Managed OAuth. The Worker validates the `Cf-Access-Jwt-Assertion` header against the Access certs endpoint, issuer, and AUD tag; it does not trust client-supplied identity headers.
 
-```sh
-wrangler secret put AGENT_API_TOKEN
-```
+Permission model:
 
-Cloudflare Access can still sit in front of the Worker. The app ignores client-supplied `Cf-Access-*` identity headers by default; set `TRUST_CF_ACCESS_HEADERS=true` only when the Worker route cannot be reached except through Cloudflare Access and you want audit logs to use the Access identity.
+- authenticated Access users: `search`, `get_document`
+- `AUTH_EDITOR_EMAILS`: `propose_update`, `create_document`, `delete_document`
+- `AUTH_ADMIN_EMAILS`: `apply_update`, `audit_log`
 
 Deploy:
 
@@ -127,11 +135,12 @@ Expected JSON shape:
 
 ## REST Examples
 
+REST endpoints are disabled in production config unless `ENABLE_REST_API=true`. Local mock mode enables them with `LOCAL_AUTH_BYPASS=true`.
+
 Search:
 
 ```sh
-curl -sS https://YOUR_WORKER/api/search \
-  -H "Authorization: Bearer $AGENT_API_TOKEN" \
+curl -sS http://127.0.0.1:8787/api/search \
   -H "Content-Type: application/json" \
   -d '{"query":"How do we rotate API keys?","max_num_results":5}'
 ```
@@ -139,8 +148,7 @@ curl -sS https://YOUR_WORKER/api/search \
 Propose an update:
 
 ```sh
-curl -sS https://YOUR_WORKER/api/propose_update \
-  -H "Authorization: Bearer $AGENT_API_TOKEN" \
+curl -sS http://127.0.0.1:8787/api/propose_update \
   -H "Content-Type: application/json" \
   -d '{
     "source": "builtin",
@@ -155,8 +163,7 @@ curl -sS https://YOUR_WORKER/api/propose_update \
 Apply after approval:
 
 ```sh
-curl -sS https://YOUR_WORKER/api/apply_update \
-  -H "Authorization: Bearer $AGENT_API_TOKEN" \
+curl -sS http://127.0.0.1:8787/api/apply_update \
   -H "Content-Type: application/json" \
   -d '{"proposal_id":"PROPOSAL_ID","confirm_apply":true}'
 ```
@@ -167,6 +174,12 @@ The agent-facing skill lives at `skills/cf-ai-docs/SKILL.md`. Install or copy th
 
 ```text
 https://YOUR_WORKER/mcp
+```
+
+The MCP resource metadata endpoint is:
+
+```text
+https://YOUR_WORKER/.well-known/oauth-protected-resource/mcp
 ```
 
 The skill requires agents to search first, fetch full source before editing, propose updates before applying, and only call `apply_update` after explicit approval.
