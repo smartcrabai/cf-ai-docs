@@ -9,6 +9,8 @@ LLM Agent
       - search
       - get_document
       - propose_update
+      - create_document
+      - delete_document
       - apply_update
       - audit_log
         -> Cloudflare AI Search
@@ -22,7 +24,9 @@ LLM Agent
 - `search`: query Cloudflare AI Search and return ranked chunks with source keys.
 - `get_document`: fetch full documents from AI Search built-in storage, R2, or allowed website URLs.
 - `propose_update`: store a pending full-document replacement with SHA-256 optimistic locking.
-- `apply_update`: apply an approved proposal to built-in storage or R2, rejecting stale baselines.
+- `create_document`: store a pending proposal for a brand-new document at a key that does not exist yet.
+- `delete_document`: store a pending proposal to delete an existing document, guarded by the current SHA-256.
+- `apply_update`: apply an approved proposal (create, update, or delete) to built-in storage or R2, rejecting stale baselines.
 - `audit_log`: inspect D1 audit events for searches, reads, proposals, applies, and conflicts.
 
 The MCP endpoint is `POST /mcp` and `GET /mcp` via Streamable HTTP. REST equivalents are available under `/api/*` for debugging and automation.

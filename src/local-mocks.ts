@@ -21,6 +21,7 @@ type LocalItem = {
 type LocalProposalRow = {
 	proposal_id: string;
 	status: string;
+	operation: string;
 	target_source: string;
 	ai_search_instance: string | null;
 	document_id: string | null;
@@ -594,6 +595,10 @@ class LocalR2Bucket {
 		this.objects.set(key, object);
 		return object as unknown as R2Object;
 	}
+
+	async delete(key: string): Promise<void> {
+		this.objects.delete(key);
+	}
 }
 
 class LocalR2Object {
@@ -627,19 +632,20 @@ class LocalD1Database {
 		let changes = 0;
 		if (sql.includes("INSERT INTO update_proposals")) {
 			const proposalId = asString(bindings, 0);
-			const targetSource = asString(bindings, 1);
-			const aiSearchInstance = asNullableString(bindings, 2);
-			const documentId = asNullableString(bindings, 3);
-			const documentKey = asString(bindings, 4);
-			const r2Key = asNullableString(bindings, 5);
-			const expectedSha256 = asString(bindings, 6);
-			const proposedSha256 = asString(bindings, 7);
-			const proposedContent = asString(bindings, 8);
-			const rationale = asString(bindings, 9);
-			const metadataJson = asNullableString(bindings, 10);
-			const author = asString(bindings, 11);
-			const createdAt = asString(bindings, 12);
-			const updatedAt = asString(bindings, 13);
+			const operation = asString(bindings, 1);
+			const targetSource = asString(bindings, 2);
+			const aiSearchInstance = asNullableString(bindings, 3);
+			const documentId = asNullableString(bindings, 4);
+			const documentKey = asString(bindings, 5);
+			const r2Key = asNullableString(bindings, 6);
+			const expectedSha256 = asString(bindings, 7);
+			const proposedSha256 = asString(bindings, 8);
+			const proposedContent = asString(bindings, 9);
+			const rationale = asString(bindings, 10);
+			const metadataJson = asNullableString(bindings, 11);
+			const author = asString(bindings, 12);
+			const createdAt = asString(bindings, 13);
+			const updatedAt = asString(bindings, 14);
 
 			this.proposals.set(proposalId, {
 				ai_search_instance: aiSearchInstance,
@@ -652,6 +658,7 @@ class LocalD1Database {
 				document_key: documentKey,
 				expected_sha256: expectedSha256,
 				metadata_json: metadataJson,
+				operation,
 				proposal_id: proposalId,
 				proposed_content: proposedContent,
 				proposed_sha256: proposedSha256,

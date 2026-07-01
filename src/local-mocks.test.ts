@@ -196,6 +196,96 @@ describe("local mock environment", () => {
 		expect(updatedBody.r2_metadata?.custom_metadata?.reviewed).toBe("true");
 	});
 
+	test("creates, updates, searches, and deletes a document end to end", async () => {
+		const env = createLocalMockEnv();
+
+		const created = await post(env, "/api/create_document", {
+			document_key: "test/hello.md",
+			proposed_content: "# Hello Test\n\nInitial content.\n",
+			rationale: "e2e create",
+			source: "builtin",
+		});
+		expect(created.status).toBe(200);
+		const createdBody = (await created.json()) as ProposalResponse;
+		expect(createdBody.status).toBe("pending");
+
+		const createApplied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: createdBody.proposal_id,
+		});
+		expect(createApplied.status).toBe(200);
+
+		const searchAfterCreate = await post(env, "/api/search", {
+			query: "Hello Test",
+		});
+		const searchAfterCreateBody =
+			(await searchAfterCreate.json()) as SearchResponse;
+		expect(
+			searchAfterCreateBody.chunks.some(
+				(chunk) => chunk.item_key === "test/hello.md",
+			),
+		).toBe(true);
+
+		const fetched = await post(env, "/api/get_document", {
+			document_key: "test/hello.md",
+			source: "builtin",
+		});
+		const fetchedBody = (await fetched.json()) as DocumentResponse;
+
+		const updateProposal = await post(env, "/api/propose_update", {
+			document_key: "test/hello.md",
+			expected_sha256: fetchedBody.sha256,
+			proposed_content: "# Hello Test\n\nUpdated content.\n",
+			rationale: "e2e update",
+			source: "builtin",
+		});
+		const updateProposalBody =
+			(await updateProposal.json()) as ProposalResponse;
+		const updateApplied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: updateProposalBody.proposal_id,
+		});
+		expect(updateApplied.status).toBe(200);
+
+		const afterUpdate = await post(env, "/api/get_document", {
+			document_key: "test/hello.md",
+			source: "builtin",
+		});
+		const afterUpdateBody = (await afterUpdate.json()) as DocumentResponse;
+		expect(afterUpdateBody.content).toContain("Updated content.");
+
+		const deleteProposal = await post(env, "/api/delete_document", {
+			document_key: "test/hello.md",
+			expected_sha256: afterUpdateBody.sha256,
+			rationale: "e2e delete",
+			source: "builtin",
+		});
+		expect(deleteProposal.status).toBe(200);
+		const deleteProposalBody =
+			(await deleteProposal.json()) as ProposalResponse;
+		const deleteApplied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: deleteProposalBody.proposal_id,
+		});
+		expect(deleteApplied.status).toBe(200);
+
+		const afterDelete = await post(env, "/api/get_document", {
+			document_key: "test/hello.md",
+			source: "builtin",
+		});
+		expect(afterDelete.status).toBe(404);
+	});
+
+	test("create_document conflicts when the key already exists", async () => {
+		const env = createLocalMockEnv();
+		const response = await post(env, "/api/create_document", {
+			document_key: "runbooks/api-keys.md",
+			proposed_content: "duplicate",
+			source: "builtin",
+		});
+		expect(response.status).toBe(409);
+	});
+
 	test("does not mark built-in updates applied when indexing fails", async () => {
 		const env = createLocalMockEnv();
 		const items = env.AI_SEARCH.get("docs").items as {

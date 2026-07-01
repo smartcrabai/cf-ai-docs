@@ -1,12 +1,16 @@
 import {
 	ApplyUpdateInputSchema,
 	AuditLogInputSchema,
+	CreateDocumentInputSchema,
+	DeleteDocumentInputSchema,
 	type Env,
 	GetDocumentInputSchema,
 	ProposeUpdateInputSchema,
 	SearchInputSchema,
 	applyUpdate,
 	auditLog,
+	createDocument,
+	deleteDocument,
 	getDocument,
 	HttpError,
 	identifyActor,
@@ -20,6 +24,8 @@ const API_ROUTES = new Set([
 	"/api/search",
 	"/api/get_document",
 	"/api/propose_update",
+	"/api/create_document",
+	"/api/delete_document",
 	"/api/apply_update",
 	"/api/audit_log",
 ]);
@@ -55,6 +61,8 @@ export async function handleRequest(
 					"search",
 					"get_document",
 					"propose_update",
+					"create_document",
+					"delete_document",
 					"apply_update",
 					"audit_log",
 				],
@@ -131,6 +139,14 @@ async function handleApiRoute(
 		case "/api/propose_update":
 			return jsonResponse(
 				await proposeUpdate(env, actor, ProposeUpdateInputSchema.parse(body)),
+			);
+		case "/api/create_document":
+			return jsonResponse(
+				await createDocument(env, actor, CreateDocumentInputSchema.parse(body)),
+			);
+		case "/api/delete_document":
+			return jsonResponse(
+				await deleteDocument(env, actor, DeleteDocumentInputSchema.parse(body)),
 			);
 		case "/api/apply_update":
 			return jsonResponse(
