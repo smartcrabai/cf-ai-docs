@@ -5,6 +5,13 @@ const DEFAULT_UPDATE_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_UPDATE_POLL_TIMEOUT_MS = 30_000;
 const EMPTY_CONTENT_SHA256 =
 	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+// AI Search rejects uploads whose custom metadata contains these
+// server-managed field names (invalid_metadata_format).
+const RESERVED_AI_SEARCH_METADATA_FIELDS = new Set([
+	"timestamp",
+	"folder",
+	"filename",
+]);
 
 export interface Env {
 	AI_SEARCH: AiSearchNamespace;
@@ -1131,7 +1138,9 @@ async function applyBuiltinUpdate(
 		env,
 		proposal.ai_search_instance ?? undefined,
 	);
-	const existingMetadata = current?.item_info?.metadata ?? {};
+	const existingMetadata = sanitizeAiSearchMetadata(
+		current?.item_info?.metadata,
+	);
 	const itemInfo = await instance.items.uploadAndPoll(
 		proposal.document_key,
 		proposal.proposed_content,
@@ -1461,6 +1470,19 @@ function stringifyMetadata(
 ): Record<string, string> {
 	return Object.fromEntries(
 		Object.entries(metadata).map(([key, value]) => [key, String(value)]),
+	);
+}
+
+function sanitizeAiSearchMetadata(
+	metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+	if (!metadata) {
+		return {};
+	}
+	return Object.fromEntries(
+		Object.entries(metadata).filter(
+			([key]) => !RESERVED_AI_SEARCH_METADATA_FIELDS.has(key),
+		),
 	);
 }
 
