@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/k1LoW/runn/main/runbook.schema.yaml
+desc: cf-ai-docs mock REST update flow
+runners:
+  req: ${E2E_BASE_URL}
+steps:
+  health:
+    req:
+      /health:
+        get:
+          body: null
+    test: |
+      current.res.status == 200
+      && current.res.body.ok == true
+
+  search:
+    req:
+      /api/search:
+        post:
+          body:
+            application/json:
+              query: rotate API keys
+              max_num_results: 2
+    test: |
+      current.res.status == 200
+      && current.res.body.result_count > 0
+      && current.res.body.chunks[0].item_key == "runbooks/api-keys.md"
+
+  get_current:
+    req:
+      /api/get_document:
+        post:
+          body:
+            application/json:
+              source: builtin
+              document_key: runbooks/api-keys.md
+    test: |
+      current.res.status == 200
+      && current.res.body.source == "builtin"
+      && current.res.body.document_key == "runbooks/api-keys.md"
+      && current.res.body.sha256 != ""
+
+  propose:
+    req:
+      /api/propose_update:
+        post:
+          body:
+            application/json:
+              source: builtin
+              document_key: runbooks/api-keys.md
+              expected_sha256: "{{ steps.get_current.res.body.sha256 }}"
+              proposed_content: |
+                {{ steps.get_current.res.body.content }}
+                5. Record the rotation in the audit log.
+              rationale: runn local E2E update proposal
+    test: |
+      current.res.status == 200
+      && current.res.body.status == "pending"
+      && current.res.body.proposal_id != ""
+
+  apply:
+    req:
+      /api/apply_update:
+        post:
+          body:
+            application/json:
+              proposal_id: "{{ steps.propose.res.body.proposal_id }}"
+              confirm_apply: true
+    test: |
+      current.res.status == 200
+      && current.res.body.status == "applied"
+      && current.res.body.proposal_id == steps.propose.res.body.proposal_id
+
+  search_updated:
+    req:
+      /api/search:
+        post:
+          body:
+            application/json:
+              query: rotation audit log
+              max_num_results: 1
+    test: |
+      current.res.status == 200
+      && current.res.body.result_count > 0
+      && current.res.body.chunks[0].item_key == "runbooks/api-keys.md"
+
+  audit:
+    req:
+      /api/audit_log:
+        post:
+          body:
+            application/json:
+              proposal_id: "{{ steps.propose.res.body.proposal_id }}"
+    test: |
+      current.res.status == 200
+      && len(current.res.body.events) == 2
+      && current.res.body.events[0].action == "apply_update"
+      && current.res.body.events[1].action == "propose_update"

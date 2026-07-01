@@ -1,0 +1,35 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cf-ai-docs",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-30",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"DEFAULT_AI_SEARCH_INSTANCE": "docs",
+		"REQUIRE_AUTH": "true",
+		"PROPOSAL_MAX_BYTES": "2000000",
+		"UPDATE_POLL_INTERVAL_MS": "1000",
+		"UPDATE_POLL_TIMEOUT_MS": "30000"
+	},
+	"ai_search_namespaces": [
+		{
+			"binding": "AI_SEARCH",
+			"namespace": "default",
+			"remote": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "cf-ai-docs",
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "DOCS_BUCKET",
+			"bucket_name": "cf-ai-docs",
+			"remote": true
+		}
+	]
+}
