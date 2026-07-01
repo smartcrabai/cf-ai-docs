@@ -1138,7 +1138,9 @@ async function applyBuiltinUpdate(
 		env,
 		proposal.ai_search_instance ?? undefined,
 	);
-	const existingMetadata = sanitizeAiSearchMetadata(current?.item_info?.metadata);
+	const existingMetadata = sanitizeAiSearchMetadata(
+		current?.item_info?.metadata,
+	);
 	const itemInfo = await instance.items.uploadAndPoll(
 		proposal.document_key,
 		proposal.proposed_content,
