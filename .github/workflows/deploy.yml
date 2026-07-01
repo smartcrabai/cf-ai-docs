@@ -1,0 +1,37 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      # リポジトリのwrangler.jsoncにはセルフホストユーザー向けのダミーdatabase_idを残しているため、
+      # デプロイ時のみ実際のD1データベースIDを注入する。
+      - name: Inject production D1 database ID
+        run: |
+          jq --arg id "$D1_DATABASE_ID" '.d1_databases[0].database_id = $id' wrangler.jsonc > wrangler.jsonc.tmp
+          mv wrangler.jsonc.tmp wrangler.jsonc
+        env:
+          D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          command: deploy
