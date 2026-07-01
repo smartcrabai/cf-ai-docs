@@ -1,0 +1,33 @@
+{
+	"name": "cf-ai-docs",
+	"module": "src/index.ts",
+	"type": "module",
+	"scripts": {
+		"db:migrate": "wrangler d1 migrations apply cf-ai-docs --remote",
+		"db:migrate:local": "wrangler d1 migrations apply cf-ai-docs --local",
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"dev:mock": "bun --hot src/local-dev.ts",
+		"e2e:mock": "bash scripts/e2e_runn_mock.sh",
+		"fmt": "biome format --write ./src package.json biome.json wrangler.jsonc .claude/settings.json",
+		"fmt:check": "biome format ./src package.json biome.json wrangler.jsonc .claude/settings.json",
+		"lint": "oxlint ./src",
+		"lint:fix": "oxlint --fix ./src",
+		"test": "bun test",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.1",
+		"@cloudflare/workers-types": "^4.20260630.1",
+		"@types/bun": "latest",
+		"oxlint": "^1.72.0",
+		"typescript": "^6.0.3",
+		"wrangler": "^4.106.0"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@typescript/native-preview": "^7.0.0-dev.20260630.1",
+		"agents": "^0.17.3",
+		"zod": "^4.4.3"
+	}
+}
