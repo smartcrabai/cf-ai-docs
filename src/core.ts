@@ -3,6 +3,8 @@ import { z } from "zod";
 const DEFAULT_PROPOSAL_MAX_BYTES = 2_000_000;
 const DEFAULT_UPDATE_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_UPDATE_POLL_TIMEOUT_MS = 30_000;
+const EMPTY_CONTENT_SHA256 =
+	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 export interface Env {
 	AI_SEARCH: AiSearchNamespace;
@@ -75,6 +77,26 @@ export const ProposeUpdateInputSchema = GetDocumentInputSchema.extend({
 	metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const CreateDocumentInputSchema = z.object({
+	source: z.enum(["builtin", "r2"]).default("builtin"),
+	instance: optionalNonEmptyString,
+	document_key: z.string().trim().min(1),
+	r2_key: optionalNonEmptyString,
+	proposed_content: z.string().min(1),
+	rationale: z.string().max(4_000).default(""),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const DeleteDocumentInputSchema = z.object({
+	source: z.enum(["builtin", "r2"]).default("builtin"),
+	instance: optionalNonEmptyString,
+	document_id: optionalNonEmptyString,
+	document_key: optionalNonEmptyString,
+	r2_key: optionalNonEmptyString,
+	expected_sha256: z.string().trim().min(1),
+	rationale: z.string().max(4_000).default(""),
+});
+
 export const ApplyUpdateInputSchema = z.object({
 	proposal_id: z.string().trim().min(1),
 	confirm_apply: z.boolean().default(false),
@@ -94,6 +116,8 @@ export const AuditLogInputSchema = z.object({
 export type SearchInput = z.infer<typeof SearchInputSchema>;
 export type GetDocumentInput = z.infer<typeof GetDocumentInputSchema>;
 export type ProposeUpdateInput = z.infer<typeof ProposeUpdateInputSchema>;
+export type CreateDocumentInput = z.infer<typeof CreateDocumentInputSchema>;
+export type DeleteDocumentInput = z.infer<typeof DeleteDocumentInputSchema>;
 export type ApplyUpdateInput = z.infer<typeof ApplyUpdateInputSchema>;
 export type AuditLogInput = z.infer<typeof AuditLogInputSchema>;
 
@@ -105,9 +129,12 @@ type ProposalStatus =
 	| "conflict"
 	| "failed";
 
+type ProposalOperation = "create" | "update" | "delete";
+
 type ProposalRow = {
 	proposal_id: string;
 	status: ProposalStatus;
+	operation: ProposalOperation;
 	target_source: "builtin" | "r2" | "website";
 	ai_search_instance: string | null;
 	document_id: string | null;
@@ -324,6 +351,21 @@ export async function getDocument(
 	return result;
 }
 
+async function tryGetDocument(
+	env: Env,
+	actor: Actor,
+	input: GetDocumentInput,
+): Promise<DocumentResult | null> {
+	try {
+		return await getDocument(env, actor, input, { audit: false });
+	} catch (error) {
+		if (error instanceof HttpError && error.status === 404) {
+			return null;
+		}
+		throw error;
+	}
+}
+
 export async function proposeUpdate(
 	env: Env,
 	actor: Actor,
@@ -371,37 +413,23 @@ export async function proposeUpdate(
 		);
 	}
 
-	const now = new Date().toISOString();
-	const proposalId = crypto.randomUUID();
 	const documentKey = requireDocumentKey(current);
 	const metadataJson = parsed.metadata ? JSON.stringify(parsed.metadata) : null;
 
-	await db
-		.prepare(
-			`INSERT INTO update_proposals (
-				proposal_id, status, target_source, ai_search_instance, document_id,
-				document_key, r2_key, expected_sha256, proposed_sha256,
-				proposed_content, rationale, metadata_json, author,
-				created_at, updated_at
-			) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.bind(
-			proposalId,
-			current.source,
-			current.instance ?? null,
-			current.document_id ?? null,
-			documentKey,
-			current.r2_key ?? null,
-			current.sha256,
-			proposedSha256,
-			parsed.proposed_content,
-			parsed.rationale,
-			metadataJson,
-			actor.id,
-			now,
-			now,
-		)
-		.run();
+	const { proposalId } = await insertProposal(db, {
+		aiSearchInstance: current.instance ?? null,
+		documentId: current.document_id ?? null,
+		documentKey,
+		expectedSha256: current.sha256,
+		operation: "update",
+		proposedContent: parsed.proposed_content,
+		proposedSha256,
+		r2Key: current.r2_key ?? null,
+		rationale: parsed.rationale,
+		metadataJson,
+		actorId: actor.id,
+		targetSource: current.source,
+	});
 
 	await writeAudit(env, {
 		action: "propose_update",
@@ -436,6 +464,162 @@ export async function proposeUpdate(
 	};
 }
 
+export async function createDocument(
+	env: Env,
+	actor: Actor,
+	input: unknown,
+): Promise<Record<string, unknown>> {
+	const parsed = CreateDocumentInputSchema.parse(input);
+	const db = requireDb(env);
+	const proposedBytes = byteLength(parsed.proposed_content);
+	const maxBytes = getProposalMaxBytes(env);
+
+	if (proposedBytes > maxBytes) {
+		throw new HttpError(413, "Proposed content is too large.", {
+			max_bytes: maxBytes,
+			proposed_bytes: proposedBytes,
+		});
+	}
+
+	const existing = await tryGetDocument(env, actor, {
+		document_key: parsed.document_key,
+		instance: parsed.instance,
+		r2_key: parsed.r2_key,
+		source: parsed.source,
+	});
+	if (existing) {
+		throw new HttpError(
+			409,
+			"A document already exists at this key. Use propose_update to modify it.",
+			{
+				current_sha256: existing.sha256,
+				document_key: parsed.document_key,
+			},
+		);
+	}
+
+	const proposedSha256 = await sha256Hex(parsed.proposed_content);
+	const metadataJson = parsed.metadata ? JSON.stringify(parsed.metadata) : null;
+
+	const { proposalId } = await insertProposal(db, {
+		aiSearchInstance: parsed.instance ?? null,
+		documentId: null,
+		documentKey: parsed.document_key,
+		expectedSha256: EMPTY_CONTENT_SHA256,
+		operation: "create",
+		proposedContent: parsed.proposed_content,
+		proposedSha256,
+		r2Key: parsed.r2_key ?? null,
+		rationale: parsed.rationale,
+		metadataJson,
+		actorId: actor.id,
+		targetSource: parsed.source,
+	});
+
+	await writeAudit(env, {
+		action: "create_document",
+		actor,
+		proposal_id: proposalId,
+		target_source: parsed.source,
+		ai_search_instance: parsed.instance,
+		document_key: parsed.document_key,
+		metadata: {
+			proposed_sha256: proposedSha256,
+			proposed_bytes: proposedBytes,
+		},
+	});
+
+	return {
+		proposal_id: proposalId,
+		status: "pending",
+		operation: "create",
+		target: {
+			source: parsed.source,
+			instance: parsed.instance,
+			document_key: parsed.document_key,
+			r2_key: parsed.r2_key,
+		},
+		proposed_sha256: proposedSha256,
+		proposed_bytes: proposedBytes,
+		apply_instruction:
+			"Call apply_update with this proposal_id and confirm_apply=true after human approval.",
+	};
+}
+
+export async function deleteDocument(
+	env: Env,
+	actor: Actor,
+	input: unknown,
+): Promise<Record<string, unknown>> {
+	const parsed = DeleteDocumentInputSchema.parse(input);
+	const db = requireDb(env);
+	const current = await getDocument(env, actor, parsed, { audit: false });
+
+	if (current.source === "website") {
+		throw new HttpError(
+			400,
+			"Website crawler sources are read-only. Store mutable documents in built-in storage or R2.",
+		);
+	}
+
+	if (parsed.expected_sha256 !== current.sha256) {
+		throw new HttpError(
+			409,
+			"The supplied expected_sha256 does not match the current document.",
+			{
+				current_sha256: current.sha256,
+				expected_sha256: parsed.expected_sha256,
+			},
+		);
+	}
+
+	const documentKey = requireDocumentKey(current);
+
+	const { proposalId } = await insertProposal(db, {
+		aiSearchInstance: current.instance ?? null,
+		documentId: current.document_id ?? null,
+		documentKey,
+		expectedSha256: current.sha256,
+		operation: "delete",
+		proposedContent: "",
+		proposedSha256: current.sha256,
+		r2Key: current.r2_key ?? null,
+		rationale: parsed.rationale,
+		metadataJson: null,
+		actorId: actor.id,
+		targetSource: current.source,
+	});
+
+	await writeAudit(env, {
+		action: "delete_document",
+		actor,
+		proposal_id: proposalId,
+		target_source: current.source,
+		ai_search_instance: current.instance,
+		document_id: current.document_id,
+		document_key: documentKey,
+		metadata: {
+			current_sha256: current.sha256,
+		},
+	});
+
+	return {
+		proposal_id: proposalId,
+		status: "pending",
+		operation: "delete",
+		target: {
+			source: current.source,
+			instance: current.instance,
+			document_id: current.document_id,
+			document_key: current.document_key,
+			r2_key: current.r2_key,
+		},
+		current_sha256: current.sha256,
+		apply_instruction:
+			"Call apply_update with this proposal_id and confirm_apply=true after human approval.",
+	};
+}
+
 export async function applyUpdate(
 	env: Env,
 	actor: Actor,
@@ -460,22 +644,22 @@ export async function applyUpdate(
 		});
 	}
 
-	const current = await getDocument(
-		env,
-		actor,
-		{
-			source: proposal.target_source,
-			instance: proposal.ai_search_instance ?? undefined,
-			document_id: proposal.document_id ?? undefined,
-			document_key: proposal.document_key,
-			r2_key: proposal.r2_key ?? undefined,
-		},
-		{ audit: false },
-	);
+	const documentRef = {
+		source: proposal.target_source,
+		instance: proposal.ai_search_instance ?? undefined,
+		document_id: proposal.document_id ?? undefined,
+		document_key: proposal.document_key,
+		r2_key: proposal.r2_key ?? undefined,
+	};
+	const current =
+		proposal.operation === "create"
+			? await tryGetDocument(env, actor, documentRef)
+			: await getDocument(env, actor, documentRef, { audit: false });
+	const currentSha256 = current?.sha256 ?? EMPTY_CONTENT_SHA256;
 
-	if (current.sha256 !== proposal.expected_sha256) {
+	if (currentSha256 !== proposal.expected_sha256) {
 		const metadata = {
-			current_sha256: current.sha256,
+			current_sha256: currentSha256,
 			expected_sha256: proposal.expected_sha256,
 		};
 		const markedConflict = await transitionProposalStatus(
@@ -530,26 +714,38 @@ export async function applyUpdate(
 	const metadata = parseJsonObject(proposal.metadata_json);
 	let applyResult: Record<string, unknown>;
 	try {
-		applyResult =
-			proposal.target_source === "r2"
-				? await applyR2Update(
-						env,
-						proposal,
-						parsed,
-						actor,
-						appliedAt,
-						metadata,
-						current,
-					)
-				: await applyBuiltinUpdate(
-						env,
-						proposal,
-						parsed,
-						actor,
-						appliedAt,
-						metadata,
-						current,
-					);
+		if (proposal.operation === "delete") {
+			if (!current) {
+				throw new HttpError(409, "Document to delete no longer exists.", {
+					document_key: proposal.document_key,
+				});
+			}
+			applyResult =
+				proposal.target_source === "r2"
+					? await applyR2Delete(env, proposal)
+					: await applyBuiltinDelete(env, proposal, current);
+		} else {
+			applyResult =
+				proposal.target_source === "r2"
+					? await applyR2Update(
+							env,
+							proposal,
+							parsed,
+							actor,
+							appliedAt,
+							metadata,
+							current,
+						)
+					: await applyBuiltinUpdate(
+							env,
+							proposal,
+							parsed,
+							actor,
+							appliedAt,
+							metadata,
+							current,
+						);
+		}
 
 		const markedApplied = await markProposalApplied(
 			db,
@@ -929,13 +1125,13 @@ async function applyBuiltinUpdate(
 	actor: Actor,
 	appliedAt: string,
 	metadata: Record<string, unknown>,
-	current: DocumentResult,
+	current: DocumentResult | null,
 ): Promise<Record<string, unknown>> {
 	const { instance } = getAiSearchInstance(
 		env,
 		proposal.ai_search_instance ?? undefined,
 	);
-	const existingMetadata = current.item_info?.metadata ?? {};
+	const existingMetadata = current?.item_info?.metadata ?? {};
 	const itemInfo = await instance.items.uploadAndPoll(
 		proposal.document_key,
 		proposal.proposed_content,
@@ -983,31 +1179,29 @@ async function applyR2Update(
 	actor: Actor,
 	appliedAt: string,
 	metadata: Record<string, unknown>,
-	current: DocumentResult,
+	current: DocumentResult | null,
 ): Promise<Record<string, unknown>> {
 	if (!env.DOCS_BUCKET) {
 		throw new HttpError(500, "DOCS_BUCKET binding is not configured.");
 	}
 
 	const key = proposal.r2_key ?? proposal.document_key;
-	const expectedEtag = current.r2_metadata?.etag;
-	if (!expectedEtag) {
+	const expectedEtag = current?.r2_metadata?.etag;
+	if (current && !expectedEtag) {
 		throw new HttpError(500, "R2 object ETag is not available.");
 	}
 
 	const putResult = await env.DOCS_BUCKET.put(key, proposal.proposed_content, {
-		onlyIf: {
-			etagMatches: expectedEtag,
-		},
+		onlyIf: expectedEtag ? { etagMatches: expectedEtag } : undefined,
 		customMetadata: {
-			...current.r2_metadata?.custom_metadata,
+			...current?.r2_metadata?.custom_metadata,
 			...stringifyMetadata(metadata),
 			update_proposal_id: proposal.proposal_id,
 			updated_at: appliedAt,
 			updated_by: actor.id,
 		},
-		httpMetadata: current.r2_metadata?.http_metadata ?? {
-			contentType: current.content_type ?? "text/markdown; charset=utf-8",
+		httpMetadata: current?.r2_metadata?.http_metadata ?? {
+			contentType: current?.content_type ?? "text/markdown; charset=utf-8",
 		},
 	});
 	if (!putResult) {
@@ -1036,6 +1230,97 @@ async function applyR2Update(
 		source: "r2",
 		sync_job: syncJob,
 	};
+}
+
+async function applyBuiltinDelete(
+	env: Env,
+	proposal: ProposalRow,
+	current: DocumentResult,
+): Promise<Record<string, unknown>> {
+	const { instance } = getAiSearchInstance(
+		env,
+		proposal.ai_search_instance ?? undefined,
+	);
+	const documentId = current.document_id;
+	if (!documentId) {
+		throw new HttpError(500, "Document ID is not available for deletion.");
+	}
+	await instance.items.delete(documentId);
+
+	return {
+		deleted: true,
+		document_id: documentId,
+		document_key: proposal.document_key,
+		source: "builtin",
+	};
+}
+
+async function applyR2Delete(
+	env: Env,
+	proposal: ProposalRow,
+): Promise<Record<string, unknown>> {
+	if (!env.DOCS_BUCKET) {
+		throw new HttpError(500, "DOCS_BUCKET binding is not configured.");
+	}
+	const key = proposal.r2_key ?? proposal.document_key;
+	await env.DOCS_BUCKET.delete(key);
+
+	return {
+		deleted: true,
+		r2_key: key,
+		source: "r2",
+	};
+}
+
+async function insertProposal(
+	db: D1Database,
+	params: {
+		operation: ProposalOperation;
+		targetSource: "builtin" | "r2" | "website";
+		aiSearchInstance: string | null;
+		documentId: string | null;
+		documentKey: string;
+		r2Key: string | null;
+		expectedSha256: string;
+		proposedSha256: string;
+		proposedContent: string;
+		rationale: string;
+		metadataJson: string | null;
+		actorId: string;
+	},
+): Promise<{ proposalId: string }> {
+	const now = new Date().toISOString();
+	const proposalId = crypto.randomUUID();
+
+	await db
+		.prepare(
+			`INSERT INTO update_proposals (
+				proposal_id, status, operation, target_source, ai_search_instance, document_id,
+				document_key, r2_key, expected_sha256, proposed_sha256,
+				proposed_content, rationale, metadata_json, author,
+				created_at, updated_at
+			) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.bind(
+			proposalId,
+			params.operation,
+			params.targetSource,
+			params.aiSearchInstance,
+			params.documentId,
+			params.documentKey,
+			params.r2Key,
+			params.expectedSha256,
+			params.proposedSha256,
+			params.proposedContent,
+			params.rationale,
+			params.metadataJson,
+			params.actorId,
+			now,
+			now,
+		)
+		.run();
+
+	return { proposalId };
 }
 
 async function getProposal(

@@ -4,12 +4,16 @@ import {
 	type Actor,
 	ApplyUpdateInputSchema,
 	AuditLogInputSchema,
+	CreateDocumentInputSchema,
+	DeleteDocumentInputSchema,
 	type Env,
 	GetDocumentInputSchema,
 	ProposeUpdateInputSchema,
 	SearchInputSchema,
 	applyUpdate,
 	auditLog,
+	createDocument,
+	deleteDocument,
 	getDocument,
 	problemFromError,
 	proposeUpdate,
@@ -53,6 +57,28 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 			title: "Propose update",
 		},
 		async (input) => asToolResult(() => proposeUpdate(env, actor, input)),
+	);
+
+	server.registerTool(
+		"create_document",
+		{
+			description:
+				"Create a pending proposal for a brand-new document at a key that does not exist yet.",
+			inputSchema: CreateDocumentInputSchema,
+			title: "Create document",
+		},
+		async (input) => asToolResult(() => createDocument(env, actor, input)),
+	);
+
+	server.registerTool(
+		"delete_document",
+		{
+			description:
+				"Create a pending proposal to delete an existing document, guarded by the current document SHA-256.",
+			inputSchema: DeleteDocumentInputSchema,
+			title: "Delete document",
+		},
+		async (input) => asToolResult(() => deleteDocument(env, actor, input)),
 	);
 
 	server.registerTool(
