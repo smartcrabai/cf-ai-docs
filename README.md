@@ -31,44 +31,112 @@ LLM Agent
 
 The MCP endpoint is `POST /mcp` and `GET /mcp` via Streamable HTTP with SSE enabled. REST equivalents can be enabled under `/api/*` for local debugging and automation, but are disabled by default in deployed configuration.
 
-## Setup
+## Production Setup From a Fresh Clone
 
-Install dependencies:
+Prerequisites:
+
+- A Cloudflare account with Workers, D1, R2, AI Search, and Zero Trust Access available.
+- A Cloudflare Zero Trust team domain such as `https://<team-name>.cloudflareaccess.com`.
+- An identity provider configured in Cloudflare Access.
+- A local shell with Bun and Git.
+- Wrangler authenticated to the target account:
 
 ```sh
+bunx wrangler login
+```
+
+Clone the repository and install dependencies:
+
+```sh
+git clone https://github.com/smartcrabai/cf-ai-docs.git
+cd cf-ai-docs
 bun install
 ```
 
-Create Cloudflare resources:
+Create Cloudflare resources. The default names below match `wrangler.jsonc`.
 
 ```sh
-wrangler ai-search namespace create default
-wrangler ai-search create docs --namespace default --type builtin --hybrid-search
-wrangler d1 create cf-ai-docs
-wrangler r2 bucket create cf-ai-docs
+bunx wrangler ai-search namespace create default
+bunx wrangler ai-search create docs --namespace default --type builtin --hybrid-search
+bunx wrangler d1 create cf-ai-docs
+bunx wrangler r2 bucket create cf-ai-docs
 ```
 
-Update `wrangler.jsonc`:
+Record the D1 database ID printed by `wrangler d1 create`. You will use it as `d1_databases[0].database_id` for direct deploys, or as the `CF_D1_DATABASE_ID` GitHub secret for GitHub Actions deploys.
+
+Choose the public MCP URL. For the default Worker name it will normally be:
+
+```text
+https://cf-ai-docs.<your-workers-subdomain>.workers.dev/mcp
+```
+
+If you use a custom domain, use that domain instead.
+
+### Configure Cloudflare Access Managed OAuth in the Dashboard
+
+Create an MCP server Access application in Cloudflare Zero Trust:
+
+1. Open the Cloudflare dashboard.
+2. Go to `Zero Trust > Access controls > AI controls`.
+3. Open the `MCP servers` tab.
+4. Select `Add an MCP server`.
+5. Set the HTTP URL to your full MCP URL, including `/mcp`.
+6. Configure an Access policy for the users allowed to reach this MCP server.
+7. Select the identity provider for the application.
+8. If you use a single IdP, enable instant authentication.
+9. Save the MCP server.
+10. Go to `Zero Trust > Access controls > Applications`.
+11. Open the generated Access application.
+12. Confirm the public hostname is the Worker hostname without `/mcp`.
+13. In `Advanced settings`, enable `Managed OAuth`.
+14. Enable `Allow localhost clients` and `Allow loopback clients` for local MCP clients such as Claude Code.
+15. Save the application.
+16. Copy the Access application `AUD tag`.
+
+This Worker validates the `Cf-Access-Jwt-Assertion` header that Cloudflare Access forwards to the origin. It verifies the Access issuer, AUD tag, and JWT signature before serving MCP requests.
+
+### Configure `wrangler.jsonc`
+
+For direct local deploys, replace the placeholders in `wrangler.jsonc`:
 
 - Replace `d1_databases[0].database_id` with the created D1 database ID.
 - Set `vars.DEFAULT_AI_SEARCH_INSTANCE` to your AI Search instance name.
 - Keep or change the `DOCS_BUCKET` binding depending on whether R2-backed updates are needed.
-- Replace the Access and MCP placeholder vars:
-  - `CF_ACCESS_TEAM_DOMAIN`: `https://<your-team-name>.cloudflareaccess.com`
-  - `CF_ACCESS_AUD`: the Access application AUD tag
-  - `MCP_RESOURCE_URL`: the public MCP URL, for example `https://docs.example.com/mcp`
-  - `OAUTH_AUTHORIZATION_SERVER`: the Managed OAuth authorization server URL exposed by the Access-protected app
-  - `MCP_ALLOWED_ORIGINS` and `MCP_ALLOWED_HOSTS`: allowed browser origins and Host headers for DNS rebinding protection
-  - `AUTH_EDITOR_EMAILS`: comma-separated users allowed to create/update/delete proposals
-  - `AUTH_ADMIN_EMAILS`: comma-separated users allowed to apply proposals and read audit logs
+- Replace the Access and MCP vars:
+  - `CF_ACCESS_TEAM_DOMAIN`: your Access team domain, for example `https://<team-name>.cloudflareaccess.com`.
+  - `CF_ACCESS_AUD`: the AUD tag from the MCP server Access application.
+  - `MCP_RESOURCE_URL`: the public MCP URL, for example `https://docs.example.com/mcp`.
+  - `OAUTH_AUTHORIZATION_SERVER`: the Access authorization server, normally the Access team domain.
+  - `MCP_ALLOWED_ORIGINS`: allowed browser origins for CORS, usually the Worker origin.
+  - `MCP_ALLOWED_HOSTS`: allowed Host headers for DNS rebinding protection, usually the Worker hostname.
+  - `AUTH_EDITOR_EMAILS`: comma-separated users allowed to create, update, and delete proposals.
+  - `AUTH_ADMIN_EMAILS`: comma-separated users allowed to apply proposals and read audit logs.
+  - `ENABLE_REST_API`: keep `false` for production unless you explicitly need authenticated REST endpoints.
+
+Example:
+
+```jsonc
+{
+  "vars": {
+    "DEFAULT_AI_SEARCH_INSTANCE": "docs",
+    "CF_ACCESS_TEAM_DOMAIN": "https://example.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "ACCESS_APP_AUD_TAG",
+    "MCP_RESOURCE_URL": "https://cf-ai-docs.example.workers.dev/mcp",
+    "OAUTH_AUTHORIZATION_SERVER": "https://example.cloudflareaccess.com",
+    "MCP_ALLOWED_ORIGINS": "https://cf-ai-docs.example.workers.dev",
+    "MCP_ALLOWED_HOSTS": "cf-ai-docs.example.workers.dev",
+    "AUTH_EDITOR_EMAILS": "editor@example.com",
+    "AUTH_ADMIN_EMAILS": "admin@example.com",
+    "ENABLE_REST_API": "false"
+  }
+}
+```
 
 Apply migrations:
 
 ```sh
 bun run db:migrate
 ```
-
-Configure Cloudflare Access as a self-hosted application in front of the public MCP hostname and enable Managed OAuth. The Worker validates the `Cf-Access-Jwt-Assertion` header against the Access certs endpoint, issuer, and AUD tag; it does not trust client-supplied identity headers.
 
 Permission model:
 
@@ -80,6 +148,57 @@ Deploy:
 
 ```sh
 bun run deploy
+```
+
+### GitHub Actions Deployment
+
+The included `Deploy` workflow rewrites `wrangler.jsonc` at deploy time so the repository can keep safe placeholder values. Configure these repository secrets:
+
+- `CLOUDFLARE_API_TOKEN`: token allowed to deploy the Worker and run D1 migrations.
+- `CLOUDFLARE_ACCOUNT_ID`: target Cloudflare account ID.
+- `CF_D1_DATABASE_ID`: D1 database ID from `wrangler d1 create`.
+
+Configure these repository variables:
+
+- `CF_ACCESS_TEAM_DOMAIN`
+- `CF_ACCESS_AUD`
+- `MCP_RESOURCE_URL`
+- `OAUTH_AUTHORIZATION_SERVER`
+- `MCP_ALLOWED_ORIGINS`
+- `MCP_ALLOWED_HOSTS`
+- `AUTH_EDITOR_EMAILS`
+- `AUTH_ADMIN_EMAILS`
+- `ENABLE_REST_API`
+
+On every push to `main`, the workflow installs dependencies, injects the production D1 and Access/OAuth values into `wrangler.jsonc`, applies D1 migrations remotely, and deploys the Worker.
+
+### Validate the Deployed MCP Server
+
+After deployment, these endpoints should return Access/OAuth metadata:
+
+```sh
+curl -i https://<your-worker-host>/.well-known/oauth-authorization-server
+curl -i https://<your-worker-host>/.well-known/oauth-protected-resource/mcp
+curl -i https://<your-worker-host>/.well-known/cloudflare-access-protected-resource/mcp
+```
+
+An unauthenticated MCP request should return `401` with a `WWW-Authenticate` challenge from Cloudflare Access:
+
+```sh
+curl -i https://<your-worker-host>/mcp -H 'Accept: text/event-stream'
+```
+
+Connect an MCP client to:
+
+```text
+https://<your-worker-host>/mcp
+```
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http cf-ai-docs https://<your-worker-host>/mcp
+claude mcp login cf-ai-docs
 ```
 
 ## Local Development
