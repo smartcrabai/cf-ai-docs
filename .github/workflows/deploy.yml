@@ -19,14 +19,63 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      # リポジトリのwrangler.jsoncにはセルフホストユーザー向けのダミーdatabase_idを残しているため、
-      # デプロイ時のみ実際のD1データベースIDを注入する。
-      - name: Inject production D1 database ID
+      # リポジトリのwrangler.jsoncにはセルフホストユーザー向けのダミー値を残しているため、
+      # デプロイ時のみ本番のD1/Access/OAuth設定を注入する。
+      - name: Inject production Wrangler config
+        shell: bash
         run: |
-          jq --arg id "$D1_DATABASE_ID" '.d1_databases[0].database_id = $id' wrangler.jsonc > wrangler.jsonc.tmp
+          required_vars=(
+            D1_DATABASE_ID
+            CF_ACCESS_TEAM_DOMAIN
+            CF_ACCESS_AUD
+            MCP_RESOURCE_URL
+            OAUTH_AUTHORIZATION_SERVER
+            MCP_ALLOWED_ORIGINS
+            MCP_ALLOWED_HOSTS
+          )
+
+          for name in "${required_vars[@]}"; do
+            value="${!name:-}"
+            if [[ -z "$value" || "$value" == *YOUR_* ]]; then
+              echo "::error::$name is not configured"
+              exit 1
+            fi
+          done
+
+          jq \
+            --arg d1 "$D1_DATABASE_ID" \
+            --arg teamDomain "$CF_ACCESS_TEAM_DOMAIN" \
+            --arg aud "$CF_ACCESS_AUD" \
+            --arg resourceUrl "$MCP_RESOURCE_URL" \
+            --arg authorizationServer "$OAUTH_AUTHORIZATION_SERVER" \
+            --arg allowedOrigins "$MCP_ALLOWED_ORIGINS" \
+            --arg allowedHosts "$MCP_ALLOWED_HOSTS" \
+            --arg editorEmails "$AUTH_EDITOR_EMAILS" \
+            --arg adminEmails "$AUTH_ADMIN_EMAILS" \
+            --arg enableRestApi "$ENABLE_REST_API" \
+            '.d1_databases[0].database_id = $d1
+              | .vars.CF_ACCESS_TEAM_DOMAIN = $teamDomain
+              | .vars.CF_ACCESS_AUD = $aud
+              | .vars.MCP_RESOURCE_URL = $resourceUrl
+              | .vars.OAUTH_AUTHORIZATION_SERVER = $authorizationServer
+              | .vars.MCP_ALLOWED_ORIGINS = $allowedOrigins
+              | .vars.MCP_ALLOWED_HOSTS = $allowedHosts
+              | .vars.AUTH_EDITOR_EMAILS = $editorEmails
+              | .vars.AUTH_ADMIN_EMAILS = $adminEmails
+              | .vars.ENABLE_REST_API = $enableRestApi' \
+            wrangler.jsonc > wrangler.jsonc.tmp
           mv wrangler.jsonc.tmp wrangler.jsonc
         env:
           D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+          CF_ACCESS_TEAM_DOMAIN: ${{ vars.CF_ACCESS_TEAM_DOMAIN }}
+          CF_ACCESS_AUD: ${{ vars.CF_ACCESS_AUD }}
+          MCP_RESOURCE_URL: ${{ vars.MCP_RESOURCE_URL }}
+          OAUTH_AUTHORIZATION_SERVER: ${{ vars.OAUTH_AUTHORIZATION_SERVER }}
+          MCP_ALLOWED_ORIGINS: ${{ vars.MCP_ALLOWED_ORIGINS }}
+          MCP_ALLOWED_HOSTS: ${{ vars.MCP_ALLOWED_HOSTS }}
+          AUTH_EDITOR_EMAILS: ${{ vars.AUTH_EDITOR_EMAILS }}
+          AUTH_ADMIN_EMAILS: ${{ vars.AUTH_ADMIN_EMAILS }}
+          ENABLE_REST_API: ${{ vars.ENABLE_REST_API || 'false' }}
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v4
