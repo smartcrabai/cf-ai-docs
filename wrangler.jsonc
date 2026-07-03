@@ -15,9 +15,7 @@
 		"AUTH_EDITOR_EMAILS": "",
 		"AUTH_ADMIN_EMAILS": "",
 		"ENABLE_REST_API": "false",
-		"PROPOSAL_MAX_BYTES": "2000000",
-		"UPDATE_POLL_INTERVAL_MS": "1000",
-		"UPDATE_POLL_TIMEOUT_MS": "30000"
+		"PROPOSAL_MAX_BYTES": "2000000"
 	},
 	"ai_search_namespaces": [
 		{

@@ -12,6 +12,7 @@ LLM Agent
       - create_document
       - delete_document
       - apply_update
+      - get_index_status
       - audit_log
         -> Cloudflare AI Search
         -> R2 / built-in storage / website crawler
@@ -26,8 +27,9 @@ LLM Agent
 - `propose_update`: store a pending full-document replacement with SHA-256 optimistic locking.
 - `create_document`: store a pending proposal for a brand-new document at a key that does not exist yet.
 - `delete_document`: store a pending proposal to delete an existing document, guarded by the current SHA-256.
-- `apply_update`: apply an approved proposal (create, update, or delete) to built-in storage or R2, rejecting stale baselines.
-- `audit_log`: inspect D1 audit events for searches, reads, proposals, applies, and conflicts.
+- `apply_update`: apply an approved proposal (create, update, or delete) to built-in storage or R2, rejecting stale baselines. For built-in storage this returns as soon as the write succeeds; AI Search indexing continues asynchronously.
+- `get_index_status`: check AI Search indexing progress (built-in item status, or R2 sync job status) for a proposal applied by `apply_update`.
+- `audit_log`: inspect D1 audit events for searches, reads, proposals, applies, index completion/failure, and conflicts.
 
 The MCP endpoint is `POST /mcp` and `GET /mcp` via Streamable HTTP with SSE enabled. REST equivalents can be enabled under `/api/*` for local debugging and automation, but are disabled by default in deployed configuration.
 
@@ -140,7 +142,7 @@ bun run db:migrate
 
 Permission model:
 
-- authenticated Access users: `search`, `get_document`
+- authenticated Access users: `search`, `get_document`, `get_index_status`
 - `AUTH_EDITOR_EMAILS`: `propose_update`, `create_document`, `delete_document`
 - `AUTH_ADMIN_EMAILS`: `apply_update`, `audit_log`
 
@@ -285,6 +287,14 @@ Apply after approval:
 curl -sS http://127.0.0.1:8787/api/apply_update \
   -H "Content-Type: application/json" \
   -d '{"proposal_id":"PROPOSAL_ID","confirm_apply":true}'
+```
+
+`apply_update` returns as soon as the write succeeds; check indexing progress separately:
+
+```sh
+curl -sS http://127.0.0.1:8787/api/get_index_status \
+  -H "Content-Type: application/json" \
+  -d '{"proposal_id":"PROPOSAL_ID"}'
 ```
 
 ## Agent Skill

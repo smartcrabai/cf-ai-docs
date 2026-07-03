@@ -81,8 +81,6 @@ export function createLocalMockEnv(
 		MCP_RESOURCE_URL: "http://localhost/mcp",
 		OAUTH_AUTHORIZATION_SERVER: "http://localhost",
 		PROPOSAL_MAX_BYTES: "2000000",
-		UPDATE_POLL_INTERVAL_MS: "250",
-		UPDATE_POLL_TIMEOUT_MS: "1000",
 	};
 }
 
@@ -398,14 +396,6 @@ class LocalAiSearchItems {
 		);
 	}
 
-	async uploadAndPoll(
-		name: string,
-		content: ReadableStream | Blob | string,
-		options: AiSearchUploadItemOptions = {},
-	): Promise<AiSearchItemInfo> {
-		return await this.upload(name, content, options);
-	}
-
 	get(itemId: string): AiSearchItem {
 		return new LocalAiSearchItem(
 			this.instance,
@@ -493,7 +483,9 @@ class LocalAiSearchItem {
 	private requireItem(): LocalItem {
 		const item = this.instance.getById(this.itemId);
 		if (!item) {
-			throw new Error(`Local AI Search item not found: ${this.itemId}`);
+			const error = new Error(`Local AI Search item not found: ${this.itemId}`);
+			error.name = "AiSearchNotFoundError";
+			throw error;
 		}
 		return item;
 	}
@@ -674,7 +666,8 @@ class LocalD1Database {
 			const appliedBy = asString(bindings, 1);
 			const updatedAt = asString(bindings, 2);
 			const applyResultJson = asString(bindings, 3);
-			const proposalId = asString(bindings, 4);
+			const backfillDocumentId = asNullableString(bindings, 4);
+			const proposalId = asString(bindings, 5);
 			const proposal = this.proposals.get(proposalId);
 			if (
 				proposal &&
@@ -685,6 +678,21 @@ class LocalD1Database {
 				proposal.applied_by = appliedBy;
 				proposal.updated_at = updatedAt;
 				proposal.apply_result_json = applyResultJson;
+				if (!proposal.document_id && backfillDocumentId) {
+					proposal.document_id = backfillDocumentId;
+				}
+				changes = 1;
+			}
+		} else if (
+			sql.includes("UPDATE update_proposals") &&
+			sql.includes("AND apply_result_json = ?")
+		) {
+			const newApplyResultJson = asString(bindings, 0);
+			const proposalId = asString(bindings, 1);
+			const expectedApplyResultJson = asNullableString(bindings, 2);
+			const proposal = this.proposals.get(proposalId);
+			if (proposal && proposal.apply_result_json === expectedApplyResultJson) {
+				proposal.apply_result_json = newApplyResultJson;
 				changes = 1;
 			}
 		} else if (sql.includes("UPDATE update_proposals")) {

@@ -21,8 +21,11 @@ type ProposalResponse = {
 };
 
 type ApplyResponse = {
+	proposal_id: string;
 	result?: {
-		item?: { metadata?: Record<string, unknown> };
+		item?: { id?: string; metadata?: Record<string, unknown> };
+		indexing_status?: string;
+		indexing_note?: string;
 		sync_job?: { id: string };
 	};
 	status: string;
@@ -30,6 +33,21 @@ type ApplyResponse = {
 
 type AuditResponse = {
 	events: Array<{ action: string }>;
+};
+
+type IndexStatusResponse = {
+	proposal_id: string;
+	proposal_status: string;
+	operation: string;
+	target_source: string;
+	note?: string;
+	indexing?: {
+		document_id?: string;
+		key?: string;
+		status?: string;
+		error?: string;
+		id?: string;
+	};
 };
 
 describe("local mock environment", () => {
@@ -286,27 +304,8 @@ describe("local mock environment", () => {
 		expect(response.status).toBe(409);
 	});
 
-	test("does not mark built-in updates applied when indexing fails", async () => {
+	test("applies built-in updates without polling and reports indexing status", async () => {
 		const env = createLocalMockEnv();
-		const items = env.AI_SEARCH.get("docs").items as {
-			uploadAndPoll: AiSearchInstance["items"]["uploadAndPoll"];
-		};
-		type UploadAndPoll = AiSearchInstance["items"]["uploadAndPoll"];
-		const originalUploadAndPoll = items.uploadAndPoll.bind(
-			items,
-		) as UploadAndPoll;
-		items.uploadAndPoll = (async (
-			name: string,
-			content: ReadableStream | Blob | string,
-			options?: AiSearchUploadItemOptions & {
-				pollIntervalMs?: number;
-				timeoutMs?: number;
-			},
-		) => {
-			const item = await originalUploadAndPoll(name, content, options);
-			return { ...item, error: "forced failure", status: "error" };
-		}) as AiSearchInstance["items"]["uploadAndPoll"];
-
 		const document = await post(env, "/api/get_document", {
 			document_key: "runbooks/api-keys.md",
 			source: "builtin",
@@ -315,7 +314,7 @@ describe("local mock environment", () => {
 		const proposal = await post(env, "/api/propose_update", {
 			document_key: "runbooks/api-keys.md",
 			expected_sha256: documentBody.sha256,
-			proposed_content: `${documentBody.content}\nIndexing failure test.\n`,
+			proposed_content: `${documentBody.content}\nNon-blocking apply test.\n`,
 			source: "builtin",
 		});
 		const proposalBody = (await proposal.json()) as ProposalResponse;
@@ -324,15 +323,379 @@ describe("local mock environment", () => {
 			confirm_apply: true,
 			proposal_id: proposalBody.proposal_id,
 		});
-		expect(applied.status).toBe(502);
+		expect(applied.status).toBe(200);
+		const appliedBody = (await applied.json()) as ApplyResponse;
+		expect(appliedBody.status).toBe("applied");
+		expect(appliedBody.result?.indexing_status).toBe("completed");
+		expect(appliedBody.result?.indexing_note).toContain("get_index_status");
+	});
+
+	test("get_index_status reports the AI Search item state for an applied built-in proposal", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nIndex status test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+
+		const status = await post(env, "/api/get_index_status", {
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(status.status).toBe(200);
+		const statusBody = (await status.json()) as IndexStatusResponse;
+		expect(statusBody.proposal_status).toBe("applied");
+		expect(statusBody.target_source).toBe("builtin");
+		expect(statusBody.indexing?.status).toBe("completed");
+		expect(statusBody.indexing?.key).toBe("runbooks/api-keys.md");
+	});
+
+	test("get_index_status reports the sync job state for an applied R2 proposal", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			instance: "docs",
+			r2_key: "r2/policies/access.md",
+			source: "r2",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			expected_sha256: documentBody.sha256,
+			instance: "docs",
+			proposed_content: `${documentBody.content}\nSync job status test.\n`,
+			r2_key: "r2/policies/access.md",
+			rationale: "Exercise get_index_status for R2.",
+			source: "r2",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+		const appliedBody = (await applied.json()) as ApplyResponse;
+		const syncJobId = appliedBody.result?.sync_job?.id;
+		expect(typeof syncJobId).toBe("string");
+
+		const status = await post(env, "/api/get_index_status", {
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(status.status).toBe(200);
+		const statusBody = (await status.json()) as IndexStatusResponse & {
+			indexing?: { id?: string };
+		};
+		expect(statusBody.proposal_status).toBe("applied");
+		expect(statusBody.target_source).toBe("r2");
+		expect(statusBody.indexing?.id).toBe(syncJobId);
+	});
+
+	test("get_index_status returns 404 for an unknown proposal_id", async () => {
+		const env = createLocalMockEnv();
+		const status = await post(env, "/api/get_index_status", {
+			proposal_id: "does-not-exist",
+		});
+		expect(status.status).toBe(404);
+	});
+
+	test("marks a built-in update failed when upload() returns a synchronous error status", async () => {
+		const env = createLocalMockEnv();
+		const items = env.AI_SEARCH.get("docs").items;
+		const originalUpload = items.upload.bind(items);
+		items.upload = (async (
+			name: string,
+			content: ReadableStream | Blob | string,
+			options?: AiSearchUploadItemOptions,
+		) => {
+			const item = await originalUpload(name, content, options);
+			return {
+				...item,
+				error: "forced synchronous rejection",
+				status: "error",
+			};
+		}) as typeof items.upload;
+
+		try {
+			const document = await post(env, "/api/get_document", {
+				document_key: "runbooks/api-keys.md",
+				source: "builtin",
+			});
+			const documentBody = (await document.json()) as DocumentResponse;
+			const proposal = await post(env, "/api/propose_update", {
+				document_key: "runbooks/api-keys.md",
+				expected_sha256: documentBody.sha256,
+				proposed_content: `${documentBody.content}\nSynchronous upload failure test.\n`,
+				source: "builtin",
+			});
+			const proposalBody = (await proposal.json()) as ProposalResponse;
+
+			const applied = await post(env, "/api/apply_update", {
+				confirm_apply: true,
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(applied.status).toBe(502);
+
+			const audit = await post(env, "/api/audit_log", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			const auditBody = (await audit.json()) as AuditResponse;
+			expect(auditBody.events.map((event) => event.action)).toContain(
+				"apply_update_failed",
+			);
+		} finally {
+			items.upload = originalUpload;
+		}
+	});
+
+	test("get_index_status returns 502 (not 404) when the AI Search lookup fails for a reason other than not-found", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nTransient failure test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+
+		const items = env.AI_SEARCH.get("docs").items;
+		const originalGet = items.get.bind(items);
+		items.get = ((_itemId: string) =>
+			({
+				info: async () => {
+					throw new Error("transient upstream failure");
+				},
+			}) as unknown as AiSearchItem) as typeof items.get;
+		try {
+			const status = await post(env, "/api/get_index_status", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(status.status).toBe(502);
+		} finally {
+			items.get = originalGet;
+		}
+	});
+
+	test("get_index_status records an index_completed audit event once per terminal status", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nTerminal status audit test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+
+		const firstStatus = await post(env, "/api/get_index_status", {
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(firstStatus.status).toBe(200);
+
+		const secondStatus = await post(env, "/api/get_index_status", {
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(secondStatus.status).toBe(200);
 
 		const audit = await post(env, "/api/audit_log", {
 			proposal_id: proposalBody.proposal_id,
 		});
 		const auditBody = (await audit.json()) as AuditResponse;
-		expect(auditBody.events.map((event) => event.action)).toContain(
-			"apply_update_failed",
+		const completedEvents = auditBody.events.filter(
+			(event) => event.action === "index_completed",
 		);
+		expect(completedEvents).toHaveLength(1);
+	});
+
+	test("get_index_status records an index_failed audit event once when async indexing ends in error", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nAsync indexing failure test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+		const appliedBody = (await applied.json()) as ApplyResponse;
+		const itemId = appliedBody.result?.item?.id;
+		expect(typeof itemId).toBe("string");
+
+		const items = env.AI_SEARCH.get("docs").items;
+		const originalGet = items.get.bind(items);
+		items.get = ((id: string) => {
+			if (id !== itemId) {
+				return originalGet(id);
+			}
+			return {
+				info: async () => ({
+					id,
+					key: "runbooks/api-keys.md",
+					status: "error",
+					error: "async indexing failure",
+				}),
+			} as unknown as AiSearchItem;
+		}) as typeof items.get;
+
+		try {
+			const firstStatus = await post(env, "/api/get_index_status", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(firstStatus.status).toBe(200);
+			const firstBody = (await firstStatus.json()) as IndexStatusResponse;
+			expect(firstBody.indexing?.status).toBe("error");
+
+			const secondStatus = await post(env, "/api/get_index_status", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(secondStatus.status).toBe(200);
+
+			const audit = await post(env, "/api/audit_log", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			const auditBody = (await audit.json()) as AuditResponse;
+			const failedEvents = auditBody.events.filter(
+				(event) => event.action === "index_failed",
+			);
+			expect(failedEvents).toHaveLength(1);
+		} finally {
+			items.get = originalGet;
+		}
+	});
+
+	test("get_index_status treats a skipped item as terminal and records index_completed", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nSkipped status test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+		const applied = await post(env, "/api/apply_update", {
+			confirm_apply: true,
+			proposal_id: proposalBody.proposal_id,
+		});
+		expect(applied.status).toBe(200);
+		const appliedBody = (await applied.json()) as ApplyResponse;
+		const itemId = appliedBody.result?.item?.id;
+		expect(typeof itemId).toBe("string");
+
+		const items = env.AI_SEARCH.get("docs").items;
+		const originalGet = items.get.bind(items);
+		items.get = ((id: string) => {
+			if (id !== itemId) {
+				return originalGet(id);
+			}
+			return {
+				info: async () => ({
+					id,
+					key: "runbooks/api-keys.md",
+					status: "skipped",
+				}),
+			} as unknown as AiSearchItem;
+		}) as typeof items.get;
+
+		try {
+			const status = await post(env, "/api/get_index_status", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(status.status).toBe(200);
+			const statusBody = (await status.json()) as IndexStatusResponse;
+			expect(statusBody.indexing?.status).toBe("skipped");
+
+			const audit = await post(env, "/api/audit_log", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			const auditBody = (await audit.json()) as AuditResponse;
+			const completedEvents = auditBody.events.filter(
+				(event) => event.action === "index_completed",
+			);
+			expect(completedEvents).toHaveLength(1);
+			const failedEvents = auditBody.events.filter(
+				(event) => event.action === "index_failed",
+			);
+			expect(failedEvents).toHaveLength(0);
+		} finally {
+			items.get = originalGet;
+		}
+	});
+
+	test("get_index_status does not call AI Search for an unapplied proposal", async () => {
+		const env = createLocalMockEnv();
+		const document = await post(env, "/api/get_document", {
+			document_key: "runbooks/api-keys.md",
+			source: "builtin",
+		});
+		const documentBody = (await document.json()) as DocumentResponse;
+		const proposal = await post(env, "/api/propose_update", {
+			document_key: "runbooks/api-keys.md",
+			expected_sha256: documentBody.sha256,
+			proposed_content: `${documentBody.content}\nPending proposal test.\n`,
+			source: "builtin",
+		});
+		const proposalBody = (await proposal.json()) as ProposalResponse;
+
+		const items = env.AI_SEARCH.get("docs").items;
+		const originalGet = items.get.bind(items);
+		items.get = () => {
+			throw new Error(
+				"get_index_status must not call AI Search for a pending proposal",
+			);
+		};
+		try {
+			const status = await post(env, "/api/get_index_status", {
+				proposal_id: proposalBody.proposal_id,
+			});
+			expect(status.status).toBe(200);
+			const statusBody = (await status.json()) as IndexStatusResponse;
+			expect(statusBody.proposal_status).toBe("pending");
+			expect(statusBody.indexing).toBeUndefined();
+			expect(statusBody.note).toBeTruthy();
+		} finally {
+			items.get = originalGet;
+		}
 	});
 });
 

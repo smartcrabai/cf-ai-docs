@@ -9,6 +9,7 @@ import {
 	DeleteDocumentInputSchema,
 	type Env,
 	GetDocumentInputSchema,
+	GetIndexStatusInputSchema,
 	ProposeUpdateInputSchema,
 	SearchInputSchema,
 	applyUpdate,
@@ -16,6 +17,7 @@ import {
 	createDocument,
 	deleteDocument,
 	getDocument,
+	getIndexStatus,
 	problemFromError,
 	proposeUpdate,
 	searchDocuments,
@@ -106,7 +108,7 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 		"apply_update",
 		{
 			description:
-				"Apply a pending update proposal after explicit approval. Requires confirm_apply=true and rejects stale baselines.",
+				"Apply a pending update proposal after explicit approval. Requires confirm_apply=true and rejects stale baselines. Returns as soon as the write succeeds; AI Search indexing continues asynchronously, so use get_index_status afterward to confirm indexing has completed.",
 			inputSchema: ApplyUpdateInputSchema,
 			title: "Apply update",
 		},
@@ -118,10 +120,25 @@ export function createDocsMcpServer(env: Env, actor: Actor): McpServer {
 	);
 
 	server.registerTool(
+		"get_index_status",
+		{
+			description:
+				"Check AI Search indexing progress for a proposal applied via apply_update. apply_update returns as soon as the write succeeds, before indexing finishes; use this tool afterward to confirm the document has finished indexing.",
+			inputSchema: GetIndexStatusInputSchema,
+			title: "Get index status",
+		},
+		async (input) =>
+			asToolResult(() => {
+				requireActorPermission(actor, "read");
+				return getIndexStatus(env, actor, input);
+			}),
+	);
+
+	server.registerTool(
 		"audit_log",
 		{
 			description:
-				"Read audit events for searches, document reads, proposals, and applied updates.",
+				"Read audit events for searches, document reads, proposals, applied updates, and asynchronous indexing outcomes (index_completed / index_failed).",
 			inputSchema: AuditLogInputSchema,
 			title: "Audit log",
 		},
