@@ -1,8 +1,6 @@
 import { z } from "zod";
 
 const DEFAULT_PROPOSAL_MAX_BYTES = 2_000_000;
-const DEFAULT_UPDATE_POLL_INTERVAL_MS = 1_000;
-const DEFAULT_UPDATE_POLL_TIMEOUT_MS = 30_000;
 const EMPTY_CONTENT_SHA256 =
 	"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 // AI Search rejects uploads whose custom metadata contains these
@@ -29,8 +27,6 @@ export interface Env {
 	ENABLE_REST_API?: string;
 	LOCAL_AUTH_BYPASS?: string;
 	PROPOSAL_MAX_BYTES?: string;
-	UPDATE_POLL_INTERVAL_MS?: string;
-	UPDATE_POLL_TIMEOUT_MS?: string;
 	ALLOW_WEBSITE_FETCH?: string;
 }
 
@@ -120,8 +116,6 @@ export const DeleteDocumentInputSchema = z.object({
 export const ApplyUpdateInputSchema = z.object({
 	proposal_id: z.string().trim().min(1),
 	confirm_apply: z.boolean().default(false),
-	poll_interval_ms: z.number().int().min(250).max(30_000).optional(),
-	poll_timeout_ms: z.number().int().min(1_000).max(300_000).optional(),
 	sync_after_update: z.boolean().default(true),
 });
 
@@ -133,6 +127,10 @@ export const AuditLogInputSchema = z.object({
 	offset: z.number().int().min(0).default(0),
 });
 
+export const GetIndexStatusInputSchema = z.object({
+	proposal_id: z.string().trim().min(1),
+});
+
 export type SearchInput = z.infer<typeof SearchInputSchema>;
 export type GetDocumentInput = z.infer<typeof GetDocumentInputSchema>;
 export type ProposeUpdateInput = z.infer<typeof ProposeUpdateInputSchema>;
@@ -140,6 +138,7 @@ export type CreateDocumentInput = z.infer<typeof CreateDocumentInputSchema>;
 export type DeleteDocumentInput = z.infer<typeof DeleteDocumentInputSchema>;
 export type ApplyUpdateInput = z.infer<typeof ApplyUpdateInputSchema>;
 export type AuditLogInput = z.infer<typeof AuditLogInputSchema>;
+export type GetIndexStatusInput = z.infer<typeof GetIndexStatusInputSchema>;
 
 type ProposalStatus =
 	| "pending"
@@ -598,12 +597,7 @@ export async function applyUpdate(
 	}
 
 	const db = requireDb(env);
-	const proposal = await getProposal(db, parsed.proposal_id);
-	if (!proposal) {
-		throw new HttpError(404, "Proposal not found.", {
-			proposal_id: parsed.proposal_id,
-		});
-	}
+	const proposal = await requireProposal(db, parsed.proposal_id);
 	if (proposal.status !== "pending") {
 		throw new HttpError(409, "Proposal is not pending.", {
 			proposal_id: proposal.proposal_id,
@@ -680,6 +674,7 @@ export async function applyUpdate(
 
 	const metadata = parseJsonObject(proposal.metadata_json);
 	let applyResult: Record<string, unknown>;
+	let appliedDocumentId = proposal.document_id;
 	try {
 		if (proposal.operation === "delete") {
 			if (!current) {
@@ -706,7 +701,6 @@ export async function applyUpdate(
 					: await applyBuiltinUpdate(
 							env,
 							proposal,
-							parsed,
 							actor,
 							appliedAt,
 							metadata,
@@ -714,12 +708,15 @@ export async function applyUpdate(
 						);
 		}
 
+		appliedDocumentId =
+			proposal.document_id ?? extractUploadedItemId(applyResult) ?? null;
 		const markedApplied = await markProposalApplied(
 			db,
 			proposal.proposal_id,
 			appliedAt,
 			actor.id,
 			applyResult,
+			appliedDocumentId,
 		);
 		if (!markedApplied) {
 			throw new HttpError(409, "Proposal changed while applying.", {
@@ -768,7 +765,7 @@ export async function applyUpdate(
 		proposal_id: proposal.proposal_id,
 		target_source: proposal.target_source,
 		ai_search_instance: proposal.ai_search_instance,
-		document_id: proposal.document_id,
+		document_id: appliedDocumentId,
 		document_key: proposal.document_key,
 		metadata: {
 			applied_sha256: proposal.proposed_sha256,
@@ -784,6 +781,116 @@ export async function applyUpdate(
 		applied_sha256: proposal.proposed_sha256,
 		result: applyResult,
 	};
+}
+
+export async function getIndexStatus(
+	env: Env,
+	actor: Actor,
+	input: unknown,
+): Promise<Record<string, unknown>> {
+	const parsed = GetIndexStatusInputSchema.parse(input);
+	const db = requireDb(env);
+	const proposal = await requireProposal(db, parsed.proposal_id);
+
+	const base = {
+		proposal_id: proposal.proposal_id,
+		proposal_status: proposal.status,
+		operation: proposal.operation,
+		target_source: proposal.target_source,
+	};
+
+	if (proposal.status !== "applied" || proposal.operation === "delete") {
+		return { ...base, note: buildIndexStatusNote(proposal) };
+	}
+
+	const applyResult = parseJsonObject(proposal.apply_result_json);
+
+	if (proposal.target_source === "builtin") {
+		const { instance } = getAiSearchInstance(
+			env,
+			resolveAiSearchInstanceId(proposal, applyResult),
+		);
+		const itemId = await resolveBuiltinItemId(instance, proposal, applyResult);
+		let info: AiSearchItemInfo;
+		try {
+			info = await instance.items.get(itemId).info();
+		} catch (error) {
+			if (isAiSearchNotFoundError(error)) {
+				throw new HttpError(
+					404,
+					"AI Search item not found for this proposal.",
+					{
+						document_id: itemId,
+						proposal_id: proposal.proposal_id,
+					},
+				);
+			}
+			throw new HttpError(502, "AI Search item status lookup failed.", {
+				cause: String(error),
+			});
+		}
+
+		// Anything other than queued/running is a terminal outcome. Only
+		// "error" is reported as index_failed (see recordIndexTerminalStatusOnce);
+		// completed/skipped/outdated are all reported as index_completed since
+		// AI Search has stopped actively processing the item either way.
+		if (info.status !== "queued" && info.status !== "running") {
+			await recordIndexTerminalStatusOnce(
+				db,
+				env,
+				actor,
+				proposal,
+				applyResult,
+				info,
+			);
+		}
+
+		return {
+			...base,
+			indexing: {
+				document_id: info.id,
+				key: info.key,
+				status: info.status,
+				error: info.error,
+			},
+		};
+	}
+
+	if (proposal.target_source === "r2") {
+		const syncJob = applyResult.sync_job as { id?: unknown } | undefined;
+		const syncJobId = typeof syncJob?.id === "string" ? syncJob.id : undefined;
+		if (syncJobId && proposal.ai_search_instance) {
+			const { instance } = getAiSearchInstance(
+				env,
+				proposal.ai_search_instance,
+			);
+			let jobInfo: AiSearchJobInfo;
+			try {
+				jobInfo = await instance.jobs.get(syncJobId).info();
+			} catch (error) {
+				if (isAiSearchNotFoundError(error)) {
+					throw new HttpError(
+						404,
+						"AI Search sync job not found for this proposal.",
+						{
+							job_id: syncJobId,
+							proposal_id: proposal.proposal_id,
+						},
+					);
+				}
+				throw new HttpError(502, "AI Search sync job status lookup failed.", {
+					cause: String(error),
+				});
+			}
+			return { ...base, indexing: jobInfo };
+		}
+		return {
+			...base,
+			note: "No sync job was recorded for this update. AI Search re-indexes R2-backed instances on their configured sync schedule.",
+		};
+	}
+
+	return base;
 }
 
 export async function auditLog(
@@ -1013,6 +1120,166 @@ async function findAiSearchItemByKey(
 	});
 }
 
+// Resolves the AI Search instance to use for a builtin proposal with the
+// same instance the write was applied against: proposal.ai_search_instance
+// (set at proposal time) first, then the instance recorded in apply_result
+// at apply time, and only then the caller's current default. This avoids a
+// status check drifting to a different instance if DEFAULT_AI_SEARCH_INSTANCE
+// changes between apply_update and get_index_status.
+function resolveAiSearchInstanceId(
+	proposal: ProposalRow,
+	applyResult: Record<string, unknown>,
+): string | undefined {
+	if (proposal.ai_search_instance) {
+		return proposal.ai_search_instance;
+	}
+	return typeof applyResult.ai_search_instance === "string"
+		? applyResult.ai_search_instance
+		: undefined;
+}
+
+async function resolveBuiltinItemId(
+	instance: AiSearchInstance,
+	proposal: ProposalRow,
+	applyResult: Record<string, unknown>,
+): Promise<string> {
+	if (proposal.document_id) {
+		return proposal.document_id;
+	}
+	const uploadedId = extractUploadedItemId(applyResult);
+	if (uploadedId) {
+		return uploadedId;
+	}
+	try {
+		const found = await findAiSearchItemByKey(instance, proposal.document_key);
+		return found.id;
+	} catch (error) {
+		// findAiSearchItemByKey's own "not found after a full scan" HttpError
+		// is already a clean 404 — pass it through unchanged.
+		if (error instanceof HttpError) {
+			throw error;
+		}
+		if (isAiSearchNotFoundError(error)) {
+			throw new HttpError(404, "AI Search item not found for this proposal.", {
+				document_key: proposal.document_key,
+				proposal_id: proposal.proposal_id,
+			});
+		}
+		throw new HttpError(502, "AI Search item lookup by key failed.", {
+			cause: String(error),
+		});
+	}
+}
+
+function extractUploadedItemId(
+	applyResult: Record<string, unknown>,
+): string | undefined {
+	const resultItem = applyResult.item;
+	if (
+		resultItem &&
+		typeof resultItem === "object" &&
+		"id" in resultItem &&
+		typeof (resultItem as { id?: unknown }).id === "string"
+	) {
+		return (resultItem as { id: string }).id;
+	}
+	return undefined;
+}
+
+const NOT_FOUND_MESSAGE_PATTERN = /not[ _-]?found/i;
+
+// The AI Search binding's not-found error is not documented to always be
+// named "AiSearchNotFoundError", so also treat a "not found"-ish message as
+// not-found. A misclassification here still fails safe: anything not
+// recognized as not-found falls back to a 502 with the original cause.
+function isAiSearchNotFoundError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	return (
+		error.name === "AiSearchNotFoundError" ||
+		NOT_FOUND_MESSAGE_PATTERN.test(error.message)
+	);
+}
+
+// Writes an index_completed/index_failed audit event the first time a
+// builtin item's indexing is observed to have reached a terminal state
+// (anything other than queued/running). Only "error" is reported as
+// index_failed; completed/skipped/outdated are all index_completed, since
+// they all mean AI Search stopped actively processing the item. Subsequent
+// polls that observe the same terminal status are no-ops.
+async function recordIndexTerminalStatusOnce(
+	db: D1Database,
+	env: Env,
+	actor: Actor,
+	proposal: ProposalRow,
+	applyResult: Record<string, unknown>,
+	info: AiSearchItemInfo,
+): Promise<void> {
+	const terminalStatus = info.status;
+	if (applyResult.indexing_terminal_status === terminalStatus) {
+		return;
+	}
+
+	const updatedApplyResult = {
+		...applyResult,
+		indexing_terminal_status: terminalStatus,
+	};
+	const result = await db
+		.prepare(
+			`UPDATE update_proposals
+			 SET apply_result_json = ?
+			 WHERE proposal_id = ? AND apply_result_json = ?`,
+		)
+		.bind(
+			JSON.stringify(updatedApplyResult),
+			proposal.proposal_id,
+			proposal.apply_result_json,
+		)
+		.run();
+	if (d1ChangeCount(result) !== 1) {
+		// Another concurrent poll already recorded this terminal status.
+		return;
+	}
+
+	await writeAudit(env, {
+		action: terminalStatus === "error" ? "index_failed" : "index_completed",
+		actor,
+		proposal_id: proposal.proposal_id,
+		target_source: proposal.target_source,
+		ai_search_instance: proposal.ai_search_instance,
+		document_id: info.id,
+		document_key: proposal.document_key,
+		metadata: {
+			status: terminalStatus,
+			error: info.error,
+			// The audit actor is whoever polled get_index_status, not who
+			// applied the proposal; keep the applier traceable here too.
+			applied_by: proposal.applied_by,
+		},
+	});
+}
+
+function buildIndexStatusNote(proposal: ProposalRow): string {
+	if (proposal.operation === "delete" && proposal.status === "applied") {
+		return "This proposal deleted the document. There is no indexing status to check.";
+	}
+	switch (proposal.status) {
+		case "pending":
+			return "Proposal has not been applied yet.";
+		case "applying":
+			return "Proposal is currently being applied.";
+		case "rejected":
+			return "Proposal was rejected and was never applied.";
+		case "conflict":
+			return "Proposal application hit a conflict and was not applied.";
+		case "failed":
+			return "Proposal application failed and was not applied.";
+		default:
+			return "Proposal has not been applied.";
+	}
+}
+
 async function getR2Document(
 	env: Env,
 	input: GetDocumentInput,
@@ -1088,20 +1355,19 @@ async function getWebsiteDocument(
 async function applyBuiltinUpdate(
 	env: Env,
 	proposal: ProposalRow,
-	input: ApplyUpdateInput,
 	actor: Actor,
 	appliedAt: string,
 	metadata: Record<string, unknown>,
 	current: DocumentResult | null,
 ): Promise<Record<string, unknown>> {
-	const { instance } = getAiSearchInstance(
+	const { id: instanceId, instance } = getAiSearchInstance(
 		env,
 		proposal.ai_search_instance ?? undefined,
 	);
 	const existingMetadata = sanitizeAiSearchMetadata(
 		current?.item_info?.metadata,
 	);
-	const itemInfo = await instance.items.uploadAndPoll(
+	const itemInfo = await instance.items.upload(
 		proposal.document_key,
 		proposal.proposed_content,
 		{
@@ -1112,32 +1378,24 @@ async function applyBuiltinUpdate(
 				updated_by: actor.id,
 				update_proposal_id: proposal.proposal_id,
 			},
-			pollIntervalMs:
-				input.poll_interval_ms ??
-				positiveIntegerEnv(
-					env.UPDATE_POLL_INTERVAL_MS,
-					DEFAULT_UPDATE_POLL_INTERVAL_MS,
-				),
-			timeoutMs:
-				input.poll_timeout_ms ??
-				positiveIntegerEnv(
-					env.UPDATE_POLL_TIMEOUT_MS,
-					DEFAULT_UPDATE_POLL_TIMEOUT_MS,
-				),
 		},
 	);
-	if (itemInfo.status !== "completed") {
-		throw new HttpError(502, "AI Search item indexing did not complete.", {
+	if (itemInfo.status === "error") {
+		throw new HttpError(502, "AI Search rejected the uploaded item.", {
 			error: itemInfo.error,
 			item_id: itemInfo.id,
-			item_key: itemInfo.key,
+			key: itemInfo.key,
 			status: itemInfo.status,
 		});
 	}
 
 	return {
-		item: itemInfo,
 		source: "builtin",
+		item: itemInfo,
+		ai_search_instance: instanceId,
+		indexing_status: itemInfo.status,
+		indexing_note:
+			"Indexing continues asynchronously. Check progress with get_index_status.",
 	};
 }
 
@@ -1302,6 +1560,19 @@ async function getProposal(
 		.first<ProposalRow>();
 }
 
+async function requireProposal(
+	db: D1Database,
+	proposalId: string,
+): Promise<ProposalRow> {
+	const proposal = await getProposal(db, proposalId);
+	if (!proposal) {
+		throw new HttpError(404, "Proposal not found.", {
+			proposal_id: proposalId,
+		});
+	}
+	return proposal;
+}
+
 async function transitionProposalStatus(
 	db: D1Database,
 	proposalId: string,
@@ -1338,6 +1609,7 @@ async function markProposalApplied(
 	appliedAt: string,
 	actorId: string,
 	applyResult: Record<string, unknown>,
+	backfillDocumentId: string | null,
 ): Promise<boolean> {
 	const result = await db
 		.prepare(
@@ -1346,7 +1618,8 @@ async function markProposalApplied(
 				 applied_at = ?,
 				 applied_by = ?,
 				 updated_at = ?,
-				 apply_result_json = ?
+				 apply_result_json = ?,
+				 document_id = COALESCE(document_id, ?)
 			 WHERE proposal_id = ? AND status = 'applying'`,
 		)
 		.bind(
@@ -1354,6 +1627,7 @@ async function markProposalApplied(
 			actorId,
 			appliedAt,
 			JSON.stringify(applyResult),
+			backfillDocumentId,
 			proposalId,
 		)
 		.run();

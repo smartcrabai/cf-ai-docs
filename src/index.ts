@@ -6,6 +6,7 @@ import {
 	type Actor,
 	type Env,
 	GetDocumentInputSchema,
+	GetIndexStatusInputSchema,
 	ProposeUpdateInputSchema,
 	SearchInputSchema,
 	applyUpdate,
@@ -13,6 +14,7 @@ import {
 	createDocument,
 	deleteDocument,
 	getDocument,
+	getIndexStatus,
 	HttpError,
 	problemFromError,
 	proposeUpdate,
@@ -40,6 +42,7 @@ const API_ROUTES = new Set([
 	"/api/create_document",
 	"/api/delete_document",
 	"/api/apply_update",
+	"/api/get_index_status",
 	"/api/audit_log",
 ]);
 
@@ -77,6 +80,7 @@ export async function handleRequest(
 					"create_document",
 					"delete_document",
 					"apply_update",
+					"get_index_status",
 					"audit_log",
 				],
 			});
@@ -186,6 +190,10 @@ async function handleApiRoute(
 			return jsonResponse(
 				await applyUpdate(env, actor, ApplyUpdateInputSchema.parse(body)),
 			);
+		case "/api/get_index_status":
+			return jsonResponse(
+				await getIndexStatus(env, actor, GetIndexStatusInputSchema.parse(body)),
+			);
 		case "/api/audit_log":
 			return jsonResponse(await auditLog(env, AuditLogInputSchema.parse(body)));
 		default:
@@ -204,6 +212,8 @@ function apiRoutePermission(pathname: string): ToolPermission {
 			return "write";
 		case "/api/apply_update":
 			return "apply";
+		case "/api/get_index_status":
+			return "read";
 		case "/api/audit_log":
 			return "audit";
 		default:

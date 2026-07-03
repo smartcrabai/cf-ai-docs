@@ -69,6 +69,20 @@ steps:
       current.res.status == 200
       && current.res.body.status == "applied"
       && current.res.body.proposal_id == steps.propose.res.body.proposal_id
+      && current.res.body.result.indexing_status != ""
+
+  index_status:
+    req:
+      /api/get_index_status:
+        post:
+          body:
+            application/json:
+              proposal_id: "{{ steps.propose.res.body.proposal_id }}"
+    test: |
+      current.res.status == 200
+      && current.res.body.proposal_status == "applied"
+      && current.res.body.target_source == "builtin"
+      && current.res.body.indexing.status == "completed"
 
   search_updated:
     req:
@@ -92,6 +106,7 @@ steps:
               proposal_id: "{{ steps.propose.res.body.proposal_id }}"
     test: |
       current.res.status == 200
-      && len(current.res.body.events) == 2
-      && current.res.body.events[0].action == "apply_update"
-      && current.res.body.events[1].action == "propose_update"
+      && len(current.res.body.events) == 3
+      && current.res.body.events[0].action == "index_completed"
+      && current.res.body.events[1].action == "apply_update"
+      && current.res.body.events[2].action == "propose_update"
