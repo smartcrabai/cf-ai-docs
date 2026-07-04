@@ -46,6 +46,55 @@ describe("Cloudflare Access authentication", () => {
 		]);
 	});
 
+	test("assigns configured roles to service tokens via common_name", async () => {
+		const clientId = "4d2e76378a9346364980d1ef9253fbd3.access";
+		const { env, jwks, token } = await makeAccessToken("", {
+			claims: { common_name: clientId },
+			subject: "",
+		});
+		const actor = await withMockAccessCerts(env, jwks, () =>
+			authenticateRequest(
+				new Request("https://docs.example.com/mcp", {
+					headers: { "Cf-Access-Jwt-Assertion": token },
+				}),
+				{
+					...env,
+					AUTH_EDITOR_SERVICE_TOKENS: clientId,
+				},
+			),
+		);
+
+		expect(actor).toMatchObject({
+			email: undefined,
+			id: clientId,
+			kind: "cloudflare-access",
+		});
+		expect(actor.roles).toEqual(["read", "editor"]);
+		expect(actor.scopes).toEqual(["mcp:read", "mcp:write"]);
+	});
+
+	test("service tokens without a role grant stay read-only", async () => {
+		const clientId = "4d2e76378a9346364980d1ef9253fbd3.access";
+		const { env, jwks, token } = await makeAccessToken("", {
+			claims: { common_name: clientId },
+			subject: "",
+		});
+		const actor = await withMockAccessCerts(env, jwks, () =>
+			authenticateRequest(
+				new Request("https://docs.example.com/mcp", {
+					headers: { "Cf-Access-Jwt-Assertion": token },
+				}),
+				{
+					...env,
+					AUTH_ADMIN_SERVICE_TOKENS: "other-token.access",
+				},
+			),
+		);
+
+		expect(actor.roles).toEqual(["read"]);
+		expect(actor.scopes).toEqual(["mcp:read"]);
+	});
+
 	test("rejects missing JWTs with protected resource metadata challenge", async () => {
 		const error = await captureHttpError(() =>
 			authenticateRequest(new Request("https://docs.example.com/mcp"), {
@@ -219,6 +268,8 @@ async function makeAccessToken(
 		issuer?: string;
 		jwksPublicKey?: CryptoKey;
 		signingPrivateKey?: CryptoKey;
+		claims?: Record<string, unknown>;
+		subject?: string;
 	} = {},
 ): Promise<{
 	env: Env & { CF_ACCESS_TEAM_DOMAIN: string };
@@ -233,11 +284,11 @@ async function makeAccessToken(
 		...baseEnv,
 		CF_ACCESS_TEAM_DOMAIN: teamDomain,
 	} satisfies Env;
-	const token = await new SignJWT({ email })
+	const token = await new SignJWT(options.claims ?? { email })
 		.setProtectedHeader({ alg: "RS256", kid })
 		.setIssuer(options.issuer ?? teamDomain)
 		.setAudience(options.audience ?? baseEnv.CF_ACCESS_AUD)
-		.setSubject(`user:${email}`)
+		.setSubject(options.subject ?? `user:${email}`)
 		.setExpirationTime("5m")
 		.sign(options.signingPrivateKey ?? privateKey);
 
