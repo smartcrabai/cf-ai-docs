@@ -52,6 +52,8 @@ jobs:
             --arg allowedHosts "$MCP_ALLOWED_HOSTS" \
             --arg editorEmails "$AUTH_EDITOR_EMAILS" \
             --arg adminEmails "$AUTH_ADMIN_EMAILS" \
+            --arg editorServiceTokens "$AUTH_EDITOR_SERVICE_TOKENS" \
+            --arg adminServiceTokens "$AUTH_ADMIN_SERVICE_TOKENS" \
             --arg enableRestApi "$ENABLE_REST_API" \
             '.d1_databases[0].database_id = $d1
               | .vars.CF_ACCESS_TEAM_DOMAIN = $teamDomain
@@ -62,6 +64,8 @@ jobs:
               | .vars.MCP_ALLOWED_HOSTS = $allowedHosts
               | .vars.AUTH_EDITOR_EMAILS = $editorEmails
               | .vars.AUTH_ADMIN_EMAILS = $adminEmails
+              | .vars.AUTH_EDITOR_SERVICE_TOKENS = $editorServiceTokens
+              | .vars.AUTH_ADMIN_SERVICE_TOKENS = $adminServiceTokens
               | .vars.ENABLE_REST_API = $enableRestApi' \
             wrangler.jsonc > wrangler.jsonc.tmp
           mv wrangler.jsonc.tmp wrangler.jsonc
@@ -75,6 +79,8 @@ jobs:
           MCP_ALLOWED_HOSTS: ${{ vars.MCP_ALLOWED_HOSTS }}
           AUTH_EDITOR_EMAILS: ${{ vars.AUTH_EDITOR_EMAILS }}
           AUTH_ADMIN_EMAILS: ${{ vars.AUTH_ADMIN_EMAILS }}
+          AUTH_EDITOR_SERVICE_TOKENS: ${{ vars.AUTH_EDITOR_SERVICE_TOKENS }}
+          AUTH_ADMIN_SERVICE_TOKENS: ${{ vars.AUTH_ADMIN_SERVICE_TOKENS }}
           ENABLE_REST_API: ${{ vars.ENABLE_REST_API || 'false' }}
 
       - name: Deploy

@@ -22,6 +22,8 @@ export interface Env {
 	OAUTH_AUTHORIZATION_SERVER?: string;
 	AUTH_EDITOR_EMAILS?: string;
 	AUTH_ADMIN_EMAILS?: string;
+	AUTH_EDITOR_SERVICE_TOKENS?: string;
+	AUTH_ADMIN_SERVICE_TOKENS?: string;
 	MCP_ALLOWED_ORIGINS?: string;
 	MCP_ALLOWED_HOSTS?: string;
 	ENABLE_REST_API?: string;

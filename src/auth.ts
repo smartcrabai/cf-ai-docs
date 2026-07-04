@@ -177,7 +177,9 @@ function actorFromAccessClaims(payload: JWTPayload, env: Env): Actor {
 	const subject = stringClaim(payload.sub);
 	const serviceTokenId = stringClaim(payload.common_name);
 	const id = email ?? subject ?? serviceTokenId ?? "cloudflare-access";
-	const roles = rolesForEmail(email, env);
+	const roles = email
+		? rolesForEmail(email, env)
+		: rolesForServiceToken(serviceTokenId, env);
 	return {
 		claims: sanitizeClaims(payload),
 		email,
@@ -214,6 +216,27 @@ function rolesForEmail(email: string | undefined, env: Env): ActorRole[] {
 		roles.add("editor");
 	}
 	if (adminEmails.has(email)) {
+		roles.add("editor");
+		roles.add("admin");
+	}
+	return [...roles];
+}
+
+function rolesForServiceToken(
+	clientId: string | undefined,
+	env: Env,
+): ActorRole[] {
+	const roles = new Set<ActorRole>(["read"]);
+	if (!clientId) {
+		return [...roles];
+	}
+	const normalized = clientId.toLowerCase();
+	const editorTokens = parseEmailSet(env.AUTH_EDITOR_SERVICE_TOKENS);
+	const adminTokens = parseEmailSet(env.AUTH_ADMIN_SERVICE_TOKENS);
+	if (editorTokens.has(normalized)) {
+		roles.add("editor");
+	}
+	if (adminTokens.has(normalized)) {
 		roles.add("editor");
 		roles.add("admin");
 	}
