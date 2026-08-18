@@ -18,7 +18,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.1",
-		"@cloudflare/workers-types": "4.20260702.1",
+		"@cloudflare/workers-types": "5.20260815.1",
 		"@types/bun": "latest",
 		"oxlint": "1.78.0",
 		"typescript": "7.0.2",
