@@ -18,11 +18,11 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.1",
-		"@cloudflare/workers-types": "^4.20260630.1",
+		"@cloudflare/workers-types": "4.20260702.1",
 		"@types/bun": "latest",
-		"oxlint": "^1.72.0",
-		"typescript": "^6.0.3",
-		"wrangler": "^4.106.0"
+		"oxlint": "1.78.0",
+		"typescript": "6.0.3",
+		"wrangler": "4.123.0"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.29.0",
