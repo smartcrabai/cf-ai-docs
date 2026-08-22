@@ -17,17 +17,17 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.1",
-		"@cloudflare/workers-types": "5.20260815.1",
+		"@biomejs/biome": "2.5.9",
+		"@cloudflare/workers-types": "5.20260819.1",
 		"@types/bun": "latest",
-		"oxlint": "1.78.0",
+		"oxlint": "1.79.0",
 		"typescript": "7.0.2",
-		"wrangler": "4.123.0"
+		"wrangler": "4.124.0"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@typescript/native-preview": "^7.0.0-dev.20260630.1",
-		"agents": "^0.17.3",
+		"agents": "^0.21.0",
 		"jose": "^6.2.3",
 		"zod": "^4.4.3"
 	}
