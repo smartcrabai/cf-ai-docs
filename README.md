@@ -334,3 +334,8 @@ To use a specific binary:
 ```sh
 RUNN_BIN=/path/to/runn bun run e2e:mock
 ```
+
+## Support
+
+If you find cf-ai-docs useful, consider [sponsoring smartcrabai](https://github.com/sponsors/smartcrabai)
+to support its development and maintenance.
