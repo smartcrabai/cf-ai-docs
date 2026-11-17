@@ -1,40 +1,42 @@
 {
   extends: [
-    "config:best-practices"
+    'config:best-practices',
   ],
-  dependencyDashboard: false,
-  minimumReleaseAge: "3 days",
+  dependencyDashboard: {
+    enabled: false,
+  },
+  minimumReleaseAge: '3 days',
   lockFileMaintenance: {
     minimumReleaseAge: null,
     addLabels: [
-      "automerge"
-    ]
+      'automerge',
+    ],
   },
   vulnerabilityAlerts: {
     minimumReleaseAge: null,
     addLabels: [
-      "automerge"
-    ]
+      'automerge',
+    ],
   },
   packageRules: [
     {
       matchUpdateTypes: [
-        "minor",
-        "patch",
-        "digest",
-        "pinDigest"
+        'minor',
+        'patch',
+        'digest',
+        'pinDigest',
       ],
-      groupName: "all minor, patch, and digest updates",
-      groupSlug: "all-minor-patch-digest-updates",
+      groupName: 'all minor, patch, and digest updates',
+      groupSlug: 'all-minor-patch-digest-updates',
       addLabels: [
-        "automerge"
-      ]
+        'automerge',
+      ],
     },
     {
       matchManagers: [
-        "github-actions"
+        'github-actions',
       ],
-      minimumReleaseAge: "7 days"
-    }
-  ]
+      minimumReleaseAge: '7 days',
+    },
+  ],
 }
